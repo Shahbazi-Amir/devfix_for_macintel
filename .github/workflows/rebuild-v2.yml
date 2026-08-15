@@ -30,9 +30,13 @@ jobs:
           echo '8a1c03bbe7ac2aa22ca60388556e8a0e1903f6c806a67e12a8ce73be039082fd  /tmp/devfix-source.tgz' | sha256sum --check --strict
           tar -tzf /tmp/devfix-source.tgz >/dev/null
 
+          mkdir -p /tmp/devfix-old-workflows
+          cp -R .github/workflows/. /tmp/devfix-old-workflows/
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           tar -xzf /tmp/devfix-source.tgz -C .
-          rm -f .github/workflows/rebuild-v2.yml
+          rm -rf .github/workflows
+          mkdir -p .github/workflows
+          cp -R /tmp/devfix-old-workflows/. .github/workflows/
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
