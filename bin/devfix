@@ -807,7 +807,7 @@ cmd_doctor() {
     printf 'Recommendation: use direct; DevFix will avoid unnecessary tunneling.\n'
   elif snowflake_available; then
     printf 'Primary issue: NETWORK_BLOCKED_OR_UNREACHABLE\n'
-    printf "%s\n" 'Recommendation: run `devfix connect`; auto mode will try built-in Snowflake.'
+    printf 'Recommendation: run devfix connect; auto mode will try built-in Snowflake.\n'
   else
     printf 'Primary issue: NETWORK_BLOCKED_OR_UNREACHABLE\n'
     printf 'Recommendation: reinstall the self-contained DevFix package; Snowflake payload is missing.\n'
