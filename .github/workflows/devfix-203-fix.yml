@@ -36,3 +36,4 @@ jobs:
           git add -A
           git commit -m 'Fix lyrebird managed transport launch on Monterey'
           git push origin HEAD:main
+# retry after exact regression insertion fix
