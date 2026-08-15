@@ -34,5 +34,5 @@ jobs:
         run: bash tests/test_install.sh
       - name: Version consistency
         run: |
-          test "$(cat VERSION)" = "2.0.0"
-          ./bin/devfix --version | grep -F 'DevFix 2.0.0'
+          version=$(cat VERSION)
+          ./bin/devfix --version | grep -F "DevFix ${version}"
