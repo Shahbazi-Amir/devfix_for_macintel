@@ -16,8 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply comprehensive patch
-        run: python3 .github/bootstrap/devfix_202_patch.py
+      - name: Apply comprehensive code patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/bootstrap/devfix_202_patch.py
+          git checkout HEAD -- .github/workflows/package.yml
+          git checkout HEAD -- .github/workflows/devfix-202-reliability-fix.yml
+          git checkout HEAD -- .github/bootstrap/devfix_202_patch.py
       - name: Validate patch before commit
         shell: bash
         run: |
@@ -26,7 +32,7 @@ jobs:
           bash tests/test_devfix.sh
           bash tests/test_install.sh
           git diff --check
-      - name: Commit patch to main
+      - name: Commit code patch to main
         shell: bash
         run: |
           set -euo pipefail
