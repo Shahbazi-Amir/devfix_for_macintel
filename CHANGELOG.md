@@ -1,12 +1,16 @@
 # Changelog
 
-## 1.0.0 — 2026-08-15
+## 2.0.0 - 2026-08-15
 
-- Initial production-oriented CLI for Intel macOS.
-- Dependency-free installation path; Homebrew is not required to install DevFix.
-- Direct vs proxied diagnostics for GitHub, GitHub API, Homebrew API, and GHCR bottles.
-- Scoped HTTP/HTTPS/SOCKS5 proxy management with credential redaction.
-- Managed wrappers for Homebrew, git, curl, and arbitrary commands.
-- Optional Homebrew API/artifact mirror overrides using supported environment variables.
-- Offline diagnostics for macOS, architecture, Xcode Command Line Tools, and Homebrew presence.
-- Installer, uninstaller, man page, test suite, CI, `.pkg` builder, tarball builder, and checksums.
+- Rebuilt DevFix around a bundled Snowflake/Tor transport.
+- Removed the requirement for an existing VPN, proxy, or VPS.
+- Added automatic direct-to-Snowflake route selection.
+- Added connection lifecycle, stale-state repair, logs, and transport commands.
+- Added process-scoped wrappers for Homebrew, Git, curl, and arbitrary CLI tools.
+- Added network versus macOS/Homebrew compatibility diagnostics.
+- Added self-contained Intel macOS `.pkg` and tarball packaging with official Tor bundle checksum verification.
+- Retained external proxy support only as an optional advanced fallback.
+
+## 1.0.0
+
+- Initial proxy-dependent diagnostic wrapper.

@@ -1,39 +1,50 @@
-# Architecture
+# DevFix 2.x Architecture
 
-DevFix intentionally stays small and dependency-free so it can be useful when Homebrew itself is unhealthy.
+## Data path
 
-## What DevFix is
+```text
+brew / git / curl / developer command
+               |
+          DevFix wrapper
+               |
+      +--------+---------+
+      |                  |
+    direct          local SOCKS
+                         |
+                   Tor daemon
+                         |
+                     lyrebird
+                         |
+                     Snowflake
+                         |
+                  Tor / Internet
+```
 
-DevFix is a command-line orchestration and diagnostics layer. It:
+DevFix deliberately routes only the child process it launches. It does not install a Network Extension and does not become a system-wide VPN.
 
-1. stores a user-selected HTTP/SOCKS5 proxy address with restrictive file permissions;
-2. injects standard proxy environment variables into child processes;
-3. injects optional, official Homebrew mirror environment variables;
-4. probes critical Homebrew/GitHub endpoints directly and through the proxy;
-5. reports local macOS/Homebrew/toolchain facts separately from network results.
+## Transport interface
 
-## What DevFix is not
+Each transport conceptually implements:
 
-DevFix is not a VPN client, VPN protocol implementation, censorship-circumvention network, DNS resolver, certificate authority, or package manager. It never claims to make an incompatible Homebrew formula compatible with an old macOS release.
+- availability
+- start
+- stop
+- status
+- endpoint
+- healthcheck
 
-An upstream proxy or tunnel must already exist. This can be a local proxy exposed by a VPN/proxy client, a trusted remote HTTP proxy, or a SOCKS5 endpoint.
+The current implementations are `direct`, `snowflake`, and optional `external-proxy`.
 
-## Network scope
+## Snowflake runtime
 
-By default DevFix changes only the environment of processes it launches. It does **not** edit macOS System Settings, network services, `/etc` files, global Git configuration, or Homebrew internals.
+Release packages embed the official Tor Expert Bundle under `/usr/local/libexec/devfix/tor`. The runtime writes per-user state under `~/Library/Application Support/DevFix` and logs under `~/Library/Logs/DevFix`.
 
-This is deliberate: `devfix off` is deterministic, and an interrupted DevFix process cannot leave the whole machine routed through a stale proxy.
+The daemon lifecycle is owned by DevFix. PID/state files use restrictive permissions. `disconnect` terminates the owned Tor process and `repair` removes stale runtime state.
 
-For the current interactive shell, `devfix env` prints explicit exports that the user may evaluate. The matching `devfix env --unset` removes them.
+## Bootstrap trust
 
-## Homebrew integration
+End users do not download Tor during first use. GitHub Actions downloads a pinned Tor Expert Bundle from Tor Project's official archive, retrieves Tor's checksum manifest over HTTPS, validates SHA-256, and embeds the verified payload into the release artifacts.
 
-Homebrew officially honors `http_proxy`, `https_proxy`, `all_proxy`, and related environment variables. DevFix also exposes Homebrew's supported `HOMEBREW_API_DOMAIN` and `HOMEBREW_ARTIFACT_DOMAIN` overrides for users who operate or trust a mirror.
+## Failure model
 
-No third-party mirror is bundled or selected automatically.
-
-## Compatibility target
-
-The primary target is Intel (`x86_64`) macOS, particularly legacy machines still running macOS Monterey/Ventura-era systems. The shell implementation avoids modern Bash-only features so it can run with the Bash version shipped by older macOS releases.
-
-The diagnostic layer treats OS/package compatibility and network connectivity as separate failure domains. A healthy proxy cannot solve a formula that no longer has a compatible bottle or source build for the host OS.
+Network reachability and Homebrew compatibility are independent axes. A working Snowflake route does not imply that a formula supports Monterey. DevFix therefore classifies command errors separately from transport failures.

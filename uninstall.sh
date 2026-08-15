@@ -1,38 +1,35 @@
 #!/bin/bash
-set -eu
-
-PREFIX="${DEVFIX_PREFIX:-/usr/local}"
+set -euo pipefail
+PREFIX=${PREFIX:-/usr/local}
+DESTDIR=${DESTDIR:-}
+TARGET="$DESTDIR$PREFIX"
 PURGE=0
-if [ "${1:-}" = "--purge" ]; then
-  PURGE=1
-elif [ -n "${1:-}" ]; then
-  echo "Usage: ./uninstall.sh [--purge]" >&2
-  exit 2
+[ "${1:-}" != "--purge" ] || PURGE=1
+
+NEED_SUDO=0
+if [ -z "$DESTDIR" ]; then
+  if [ ! -w "$PREFIX" ]; then
+    command -v sudo >/dev/null 2>&1 || { echo "sudo is required to uninstall from $PREFIX" >&2; exit 1; }
+    NEED_SUDO=1
+  fi
 fi
 
-remove_path() {
-  path="$1"
-  if [ ! -e "$path" ]; then
-    return
-  fi
-  if [ -w "$(dirname "$path")" ]; then
-    rm -f "$path"
+as_root() {
+  if [ "$NEED_SUDO" -eq 1 ]; then
+    sudo "$@"
   else
-    sudo rm -f "$path"
+    "$@"
   fi
 }
 
-remove_path "$PREFIX/bin/devfix"
-remove_path "$PREFIX/share/man/man1/devfix.1"
+as_root rm -f "$TARGET/bin/devfix" "$TARGET/share/man/man1/devfix.1"
+as_root rm -rf "$TARGET/libexec/devfix" "$TARGET/share/devfix"
 
 echo "DevFix program files removed."
-
 if [ "$PURGE" -eq 1 ]; then
-  CONFIG_DIR="${DEVFIX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/devfix}"
-  if [ -d "$CONFIG_DIR" ]; then
-    rm -rf "$CONFIG_DIR"
-    echo "Configuration removed: $CONFIG_DIR"
-  fi
+  rm -rf "$HOME/Library/Application Support/DevFix" "$HOME/Library/Logs/DevFix" \
+    "${XDG_STATE_HOME:-$HOME/.local/state}/devfix"
+  echo "User configuration, state, and logs removed."
 else
-  echo "Configuration preserved. Use --purge to remove it too."
+  echo "User configuration and logs were kept. Use --purge to remove them."
 fi

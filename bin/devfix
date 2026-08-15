@@ -1,13 +1,44 @@
 #!/bin/bash
 # DevFix for Mac Intel
-# A dependency-free network/proxy helper for Homebrew and developer CLI tools.
+# Built-in Snowflake/Tor routing for Homebrew and developer CLI tools.
 
 set -u
 
-DEVFIX_VERSION="1.0.0"
+DEVFIX_VERSION="2.0.0"
 DEVFIX_NAME="DevFix"
-DEVFIX_CONFIG_DIR="${DEVFIX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/devfix}"
-DEVFIX_CONFIG="${DEVFIX_CONFIG:-$DEVFIX_CONFIG_DIR/config}"
+DEVFIX_LIBEXEC_DIR="${DEVFIX_LIBEXEC_DIR:-/usr/local/libexec/devfix}"
+DEVFIX_TOR_BIN="${DEVFIX_TOR_BIN:-$DEVFIX_LIBEXEC_DIR/tor/tor}"
+DEVFIX_LYREBIRD_BIN="${DEVFIX_LYREBIRD_BIN:-$DEVFIX_LIBEXEC_DIR/tor/pluggable_transports/lyrebird}"
+DEVFIX_BOOTSTRAP_TIMEOUT="${DEVFIX_BOOTSTRAP_TIMEOUT:-75}"
+DEVFIX_TEST_MODE="${DEVFIX_TEST_MODE:-0}"
+
+if [ "$(uname -s 2>/dev/null || printf unknown)" = "Darwin" ]; then
+  DEVFIX_STATE_ROOT="${DEVFIX_STATE_DIR:-$HOME/Library/Application Support/DevFix}"
+  DEVFIX_LOG_DIR="${DEVFIX_LOG_DIR:-$HOME/Library/Logs/DevFix}"
+else
+  DEVFIX_STATE_ROOT="${DEVFIX_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/devfix}"
+  DEVFIX_LOG_DIR="${DEVFIX_LOG_DIR:-$DEVFIX_STATE_ROOT/logs}"
+fi
+
+DEVFIX_CONFIG="${DEVFIX_CONFIG:-$DEVFIX_STATE_ROOT/config}"
+DEVFIX_RUN_DIR="$DEVFIX_STATE_ROOT/run"
+DEVFIX_TOR_DATA_DIR="$DEVFIX_STATE_ROOT/tor-data"
+DEVFIX_STATE_FILE="$DEVFIX_RUN_DIR/state"
+DEVFIX_PID_FILE="$DEVFIX_RUN_DIR/tor.pid"
+DEVFIX_TORRC="$DEVFIX_RUN_DIR/torrc"
+DEVFIX_LOG="$DEVFIX_LOG_DIR/devfix.log"
+DEVFIX_TOR_LOG="$DEVFIX_LOG_DIR/tor.log"
+
+DEFAULT_TRANSPORT="auto"
+DEFAULT_SOCKS_PORT="19050"
+DEFAULT_CONNECT_TIMEOUT="5"
+DEFAULT_MAX_TIME="15"
+DEFAULT_AUTO_CONNECT="1"
+DEFAULT_NO_PROXY="localhost,127.0.0.1,::1"
+
+# Current built-in Snowflake bridge parameters from Tor Project's little-t tor
+# circumvention documentation. This can be overridden without changing code.
+DEFAULT_SNOWFLAKE_BRIDGE='snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 url=https://1098762253.rsc.cdn77.org front=www.phpmyadmin.net,cdn.zk.mk ice=stun:stun.antisip.com:3478,stun:stun.epygi.com:3478,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.mixvoip.com:3478,stun:stun.nextcloud.com:3478,stun:stun.bethesda.net:3478,stun:stun.nextcloud.com:443 utls-imitate=hellorandomizedalpn'
 
 C_RESET=''
 C_BOLD=''
@@ -31,21 +62,28 @@ err() { printf "%b%s%b\n" "$C_RED" "$*" "$C_RESET" >&2; }
 die() { err "Error: $*"; exit 1; }
 usage_error() { err "Error: $*"; printf "Run 'devfix help' for usage.\n" >&2; exit 2; }
 
-ensure_config_dir() {
-  if [ ! -d "$DEVFIX_CONFIG_DIR" ]; then
-    mkdir -p "$DEVFIX_CONFIG_DIR" || die "cannot create config directory: $DEVFIX_CONFIG_DIR"
-    chmod 700 "$DEVFIX_CONFIG_DIR" 2>/dev/null || true
-  fi
+now_utc() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+
+ensure_dirs() {
+  umask 077
+  mkdir -p "$DEVFIX_STATE_ROOT" "$DEVFIX_RUN_DIR" "$DEVFIX_TOR_DATA_DIR" "$DEVFIX_LOG_DIR" || die "cannot create DevFix state directories"
+  chmod 700 "$DEVFIX_STATE_ROOT" "$DEVFIX_RUN_DIR" "$DEVFIX_TOR_DATA_DIR" "$DEVFIX_LOG_DIR" 2>/dev/null || true
 }
 
-cfg_get() {
-  key="$1"
-  default_value="$2"
-  if [ ! -f "$DEVFIX_CONFIG" ]; then
+log_line() {
+  ensure_dirs
+  printf '%s %s\n' "$(now_utc)" "$*" >> "$DEVFIX_LOG" 2>/dev/null || true
+}
+
+file_get() {
+  file="$1"
+  key="$2"
+  default_value="$3"
+  if [ ! -f "$file" ]; then
     printf '%s' "$default_value"
     return
   fi
-  value=$(sed -n "s/^${key}=//p" "$DEVFIX_CONFIG" | tail -n 1)
+  value=$(sed -n "s/^${key}=//p" "$file" | tail -n 1)
   if [ -n "$value" ]; then
     printf '%s' "$value"
   else
@@ -54,30 +92,52 @@ cfg_get() {
 }
 
 load_config() {
-  PROXY_URL=$(cfg_get PROXY_URL "")
-  ENABLED=$(cfg_get ENABLED "0")
-  NO_PROXY_VALUE=$(cfg_get NO_PROXY "localhost,127.0.0.1,::1")
-  CONNECT_TIMEOUT=$(cfg_get CONNECT_TIMEOUT "5")
-  MAX_TIME=$(cfg_get MAX_TIME "15")
-  HOMEBREW_API_DOMAIN_VALUE=$(cfg_get HOMEBREW_API_DOMAIN "")
-  HOMEBREW_ARTIFACT_DOMAIN_VALUE=$(cfg_get HOMEBREW_ARTIFACT_DOMAIN "")
+  TRANSPORT=$(file_get "$DEVFIX_CONFIG" TRANSPORT "$DEFAULT_TRANSPORT")
+  EXTERNAL_PROXY=$(file_get "$DEVFIX_CONFIG" EXTERNAL_PROXY "")
+  SOCKS_PORT=$(file_get "$DEVFIX_CONFIG" SOCKS_PORT "$DEFAULT_SOCKS_PORT")
+  CONNECT_TIMEOUT=$(file_get "$DEVFIX_CONFIG" CONNECT_TIMEOUT "$DEFAULT_CONNECT_TIMEOUT")
+  MAX_TIME=$(file_get "$DEVFIX_CONFIG" MAX_TIME "$DEFAULT_MAX_TIME")
+  AUTO_CONNECT=$(file_get "$DEVFIX_CONFIG" AUTO_CONNECT "$DEFAULT_AUTO_CONNECT")
+  NO_PROXY_VALUE=$(file_get "$DEVFIX_CONFIG" NO_PROXY "$DEFAULT_NO_PROXY")
+  SNOWFLAKE_BRIDGE=$(file_get "$DEVFIX_CONFIG" SNOWFLAKE_BRIDGE "$DEFAULT_SNOWFLAKE_BRIDGE")
 }
 
 save_config() {
-  ensure_config_dir
+  ensure_dirs
   tmp="$DEVFIX_CONFIG.tmp.$$"
   umask 077
   {
-    printf 'PROXY_URL=%s\n' "$PROXY_URL"
-    printf 'ENABLED=%s\n' "$ENABLED"
-    printf 'NO_PROXY=%s\n' "$NO_PROXY_VALUE"
+    printf 'TRANSPORT=%s\n' "$TRANSPORT"
+    printf 'EXTERNAL_PROXY=%s\n' "$EXTERNAL_PROXY"
+    printf 'SOCKS_PORT=%s\n' "$SOCKS_PORT"
     printf 'CONNECT_TIMEOUT=%s\n' "$CONNECT_TIMEOUT"
     printf 'MAX_TIME=%s\n' "$MAX_TIME"
-    printf 'HOMEBREW_API_DOMAIN=%s\n' "$HOMEBREW_API_DOMAIN_VALUE"
-    printf 'HOMEBREW_ARTIFACT_DOMAIN=%s\n' "$HOMEBREW_ARTIFACT_DOMAIN_VALUE"
+    printf 'AUTO_CONNECT=%s\n' "$AUTO_CONNECT"
+    printf 'NO_PROXY=%s\n' "$NO_PROXY_VALUE"
+    printf 'SNOWFLAKE_BRIDGE=%s\n' "$SNOWFLAKE_BRIDGE"
   } > "$tmp" || die "cannot write temporary config"
   chmod 600 "$tmp" 2>/dev/null || true
   mv "$tmp" "$DEVFIX_CONFIG" || die "cannot replace config"
+}
+
+write_state() {
+  selected="$1"
+  pid_value="$2"
+  port_value="$3"
+  ensure_dirs
+  tmp="$DEVFIX_STATE_FILE.tmp.$$"
+  umask 077
+  {
+    printf 'TRANSPORT=%s\n' "$selected"
+    printf 'PID=%s\n' "$pid_value"
+    printf 'SOCKS_PORT=%s\n' "$port_value"
+    printf 'STARTED=%s\n' "$(now_utc)"
+  } > "$tmp" || die "cannot write state"
+  mv "$tmp" "$DEVFIX_STATE_FILE" || die "cannot replace state"
+}
+
+clear_state() {
+  rm -f "$DEVFIX_STATE_FILE" "$DEVFIX_PID_FILE" "$DEVFIX_TORRC"
 }
 
 contains_whitespace() {
@@ -102,15 +162,6 @@ validate_proxy_url() {
   esac
 }
 
-validate_http_url() {
-  value="$1"
-  contains_whitespace "$value" && return 1
-  case "$value" in
-    http://*|https://*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 redact_proxy() {
   printf '%s' "$1" | sed -E 's#(://)[^/@]+@#\1***@#'
 }
@@ -121,57 +172,398 @@ shell_quote() {
   printf "'"
 }
 
-apply_runtime_env() {
-  if [ "$ENABLED" = "1" ] && [ -n "$PROXY_URL" ]; then
-    export http_proxy="$PROXY_URL"
-    export https_proxy="$PROXY_URL"
-    export all_proxy="$PROXY_URL"
-    export HTTP_PROXY="$PROXY_URL"
-    export HTTPS_PROXY="$PROXY_URL"
-    export ALL_PROXY="$PROXY_URL"
-    export no_proxy="$NO_PROXY_VALUE"
-    export NO_PROXY="$NO_PROXY_VALUE"
-  fi
-  if [ -n "$HOMEBREW_API_DOMAIN_VALUE" ]; then
-    export HOMEBREW_API_DOMAIN="$HOMEBREW_API_DOMAIN_VALUE"
-  fi
-  if [ -n "$HOMEBREW_ARTIFACT_DOMAIN_VALUE" ]; then
-    export HOMEBREW_ARTIFACT_DOMAIN="$HOMEBREW_ARTIFACT_DOMAIN_VALUE"
+is_pid_alive() {
+  pid="$1"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null
+}
+
+snowflake_available() {
+  [ -x "$DEVFIX_TOR_BIN" ] && [ -x "$DEVFIX_LYREBIRD_BIN" ]
+}
+
+curl_bin() {
+  if [ -n "${DEVFIX_CURL_BIN:-}" ] && [ -x "$DEVFIX_CURL_BIN" ]; then
+    printf '%s' "$DEVFIX_CURL_BIN"
+  elif [ -x /usr/bin/curl ]; then
+    printf '%s' /usr/bin/curl
+  elif command -v curl >/dev/null 2>&1; then
+    command -v curl
+  else
+    return 1
   fi
 }
 
-print_env() {
+curl_http_code() {
+  mode="$1"
+  url="$2"
   load_config
-  if [ "${1:-}" = "--unset" ]; then
-    cat <<'ENVEOF'
-unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY no_proxy NO_PROXY
-unset HOMEBREW_API_DOMAIN HOMEBREW_ARTIFACT_DOMAIN
-ENVEOF
+  cb=$(curl_bin) || { printf '000'; return 1; }
+  case "$mode" in
+    direct)
+      http_proxy= https_proxy= all_proxy= HTTP_PROXY= HTTPS_PROXY= ALL_PROXY= \
+        "$cb" -L -sS -o /dev/null -w '%{http_code}' --noproxy '*' \
+        --connect-timeout "$CONNECT_TIMEOUT" --max-time "$MAX_TIME" "$url" 2>/dev/null || printf '000'
+      ;;
+    snowflake)
+      port=$(file_get "$DEVFIX_STATE_FILE" SOCKS_PORT "$SOCKS_PORT")
+      "$cb" -L -sS -o /dev/null -w '%{http_code}' --proxy "socks5h://127.0.0.1:$port" \
+        --connect-timeout "$CONNECT_TIMEOUT" --max-time "$MAX_TIME" "$url" 2>/dev/null || printf '000'
+      ;;
+    external-proxy)
+      [ -n "$EXTERNAL_PROXY" ] || { printf '000'; return 1; }
+      "$cb" -L -sS -o /dev/null -w '%{http_code}' --proxy "$EXTERNAL_PROXY" \
+        --connect-timeout "$CONNECT_TIMEOUT" --max-time "$MAX_TIME" "$url" 2>/dev/null || printf '000'
+      ;;
+    *) printf '000'; return 1 ;;
+  esac
+}
+
+http_code_ok() {
+  case "$1" in
+    2??|3??|401|403) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+probe_one() {
+  mode="$1"
+  label="$2"
+  url="$3"
+  code=$(curl_http_code "$mode" "$url")
+  if http_code_ok "$code"; then
+    printf '  %-24s OK (HTTP %s)\n' "$label" "$code"
+    return 0
+  fi
+  printf '  %-24s FAIL\n' "$label"
+  return 1
+}
+
+probe_critical_quiet() {
+  mode="$1"
+  for url in \
+    'https://github.com/' \
+    'https://formulae.brew.sh/api/formula/git.json' \
+    'https://ghcr.io/v2/homebrew/core/'; do
+    code=$(curl_http_code "$mode" "$url")
+    http_code_ok "$code" || return 1
+  done
+  return 0
+}
+
+probe_network() {
+  mode="$1"
+  fail=0
+  probe_one "$mode" "GitHub" 'https://github.com/' || fail=$((fail + 1))
+  probe_one "$mode" "Homebrew API" 'https://formulae.brew.sh/api/formula/git.json' || fail=$((fail + 1))
+  probe_one "$mode" "Homebrew bottles" 'https://ghcr.io/v2/homebrew/core/' || fail=$((fail + 1))
+  probe_one "$mode" "Ruby downloads" 'https://cache.ruby-lang.org/' || fail=$((fail + 1))
+  [ "$fail" -eq 0 ]
+}
+
+port_in_use() {
+  port="$1"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
+choose_socks_port() {
+  start="$1"
+  p="$start"
+  count=0
+  while [ "$count" -lt 10 ]; do
+    if ! port_in_use "$p"; then
+      printf '%s' "$p"
+      return 0
+    fi
+    p=$((p + 1))
+    count=$((count + 1))
+  done
+  return 1
+}
+
+torrc_quote() {
+  printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+}
+
+write_torrc() {
+  port="$1"
+  ensure_dirs
+  q_data=$(torrc_quote "$DEVFIX_TOR_DATA_DIR")
+  q_log=$(torrc_quote "$DEVFIX_TOR_LOG")
+  q_pt=$(torrc_quote "$DEVFIX_LYREBIRD_BIN")
+  cat > "$DEVFIX_TORRC" <<EOF_TORRC
+DataDirectory $q_data
+SocksPort 127.0.0.1:$port
+ClientOnly 1
+AvoidDiskWrites 1
+UseBridges 1
+ClientTransportPlugin snowflake exec $q_pt
+Bridge $SNOWFLAKE_BRIDGE
+Log notice file $q_log
+EOF_TORRC
+  chmod 600 "$DEVFIX_TORRC" 2>/dev/null || true
+}
+
+stop_tor_pid() {
+  pid="$1"
+  if ! is_pid_alive "$pid"; then
+    return 0
+  fi
+  kill "$pid" 2>/dev/null || true
+  i=0
+  while is_pid_alive "$pid" && [ "$i" -lt 20 ]; do
+    sleep 0.25
+    i=$((i + 1))
+  done
+  if is_pid_alive "$pid"; then
+    kill -KILL "$pid" 2>/dev/null || true
+  fi
+}
+
+start_snowflake() {
+  load_config
+  if ! snowflake_available; then
+    warn "Built-in Snowflake transport is not installed; install the DevFix .pkg or self-contained tarball."
+    return 1
+  fi
+
+  existing_pid=$(file_get "$DEVFIX_STATE_FILE" PID "")
+  existing_transport=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")
+  if [ "$existing_transport" = "snowflake" ] && is_pid_alive "$existing_pid"; then
+    ok "Snowflake is already connected."
     return 0
   fi
 
-  if [ "$ENABLED" = "1" ]; then
-    [ -n "$PROXY_URL" ] || die "proxy is enabled but no proxy URL is configured"
-    qproxy=$(shell_quote "$PROXY_URL")
-    qno=$(shell_quote "$NO_PROXY_VALUE")
-    printf 'export http_proxy=%s\n' "$qproxy"
-    printf 'export https_proxy=%s\n' "$qproxy"
-    printf 'export all_proxy=%s\n' "$qproxy"
-    printf 'export HTTP_PROXY=%s\n' "$qproxy"
-    printf 'export HTTPS_PROXY=%s\n' "$qproxy"
-    printf 'export ALL_PROXY=%s\n' "$qproxy"
-    printf 'export no_proxy=%s\n' "$qno"
-    printf 'export NO_PROXY=%s\n' "$qno"
-  else
-    printf '# DevFix proxy is disabled\n'
+  clear_state
+  ensure_dirs
+  port=$(choose_socks_port "$SOCKS_PORT") || { warn "No free local SOCKS port found in range $SOCKS_PORT-$((SOCKS_PORT + 9))."; return 1; }
+  : > "$DEVFIX_TOR_LOG"
+  chmod 600 "$DEVFIX_TOR_LOG" 2>/dev/null || true
+  write_torrc "$port"
+
+  info "Starting built-in Snowflake transport..."
+  log_line "transport=snowflake action=start"
+  "$DEVFIX_TOR_BIN" -f "$DEVFIX_TORRC" >> "$DEVFIX_TOR_LOG" 2>&1 &
+  pid=$!
+  printf '%s\n' "$pid" > "$DEVFIX_PID_FILE"
+  chmod 600 "$DEVFIX_PID_FILE" 2>/dev/null || true
+  write_state snowflake "$pid" "$port"
+
+  if [ "$DEVFIX_TEST_MODE" = "1" ]; then
+    ok "Snowflake transport started in test mode."
+    return 0
   fi
 
-  if [ -n "$HOMEBREW_API_DOMAIN_VALUE" ]; then
-    printf 'export HOMEBREW_API_DOMAIN=%s\n' "$(shell_quote "$HOMEBREW_API_DOMAIN_VALUE")"
+  elapsed=0
+  while [ "$elapsed" -lt "$DEVFIX_BOOTSTRAP_TIMEOUT" ]; do
+    if ! is_pid_alive "$pid"; then
+      tail -n 20 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
+      clear_state
+      warn "TRANSPORT_FAILURE: Snowflake/Tor exited before bootstrap completed."
+      return 1
+    fi
+    if grep -q 'Bootstrapped 100%' "$DEVFIX_TOR_LOG" 2>/dev/null && port_in_use "$port"; then
+      if probe_critical_quiet snowflake; then
+        ok "Connected with built-in Snowflake."
+        log_line "transport=snowflake action=connected"
+        return 0
+      fi
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  stop_tor_pid "$pid"
+  clear_state
+  tail -n 20 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
+  warn "TRANSPORT_FAILURE: Snowflake could not establish a working route."
+  return 1
+}
+
+connection_alive() {
+  selected=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")
+  case "$selected" in
+    direct) return 0 ;;
+    external-proxy)
+      load_config
+      [ -n "$EXTERNAL_PROXY" ]
+      return $?
+      ;;
+    snowflake)
+      pid=$(file_get "$DEVFIX_STATE_FILE" PID "")
+      is_pid_alive "$pid"
+      return $?
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+connect_direct() {
+  info "Testing direct developer-network access..."
+  if probe_critical_quiet direct; then
+    write_state direct "" ""
+    ok "Direct route is working; no tunnel is needed."
+    log_line "transport=direct action=connected"
+    return 0
   fi
-  if [ -n "$HOMEBREW_ARTIFACT_DOMAIN_VALUE" ]; then
-    printf 'export HOMEBREW_ARTIFACT_DOMAIN=%s\n' "$(shell_quote "$HOMEBREW_ARTIFACT_DOMAIN_VALUE")"
+  warn "Direct access is incomplete or blocked."
+  return 1
+}
+
+connect_external_proxy() {
+  load_config
+  [ -n "$EXTERNAL_PROXY" ] || die "no external proxy configured"
+  info "Testing configured external proxy..."
+  if probe_critical_quiet external-proxy; then
+    write_state external-proxy "" ""
+    ok "Connected through the configured external proxy."
+    log_line "transport=external-proxy action=connected"
+    return 0
   fi
+  die "configured external proxy does not provide a working developer route"
+}
+
+cmd_connect() {
+  requested="${1:-}"
+  load_config
+  [ -n "$requested" ] || requested="$TRANSPORT"
+
+  if connection_alive; then
+    current=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")
+    if [ "$requested" = "auto" ] || [ "$requested" = "$current" ]; then
+      ok "DevFix is already connected via $current."
+      return 0
+    fi
+    cmd_disconnect >/dev/null 2>&1 || true
+  fi
+
+  case "$requested" in
+    direct) connect_direct || die "direct route is not working" ;;
+    snowflake) start_snowflake || die "TRANSPORT_FAILURE: Snowflake could not connect" ;;
+    external-proxy) connect_external_proxy ;;
+    auto)
+      if connect_direct; then
+        return 0
+      fi
+      if snowflake_available; then
+        if start_snowflake; then
+          return 0
+        fi
+      fi
+      if [ -n "$EXTERNAL_PROXY" ]; then
+        connect_external_proxy
+        return $?
+      fi
+      die "TRANSPORT_FAILURE: no working transport found (direct failed; Snowflake unavailable or failed; no external proxy configured)"
+      ;;
+    *) usage_error "unknown transport: $requested" ;;
+  esac
+}
+
+cmd_disconnect() {
+  selected=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")
+  pid=$(file_get "$DEVFIX_STATE_FILE" PID "")
+  if [ "$selected" = "snowflake" ]; then
+    stop_tor_pid "$pid"
+  fi
+  clear_state
+  ok "DevFix disconnected."
+  log_line "transport=${selected:-none} action=disconnect"
+}
+
+cmd_restart() {
+  previous=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "auto")
+  cmd_disconnect >/dev/null 2>&1 || true
+  [ -n "$previous" ] || previous=auto
+  cmd_connect "$previous"
+}
+
+cmd_repair() {
+  ensure_dirs
+  selected=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")
+  pid=$(file_get "$DEVFIX_STATE_FILE" PID "")
+  if [ "$selected" = "snowflake" ] && ! is_pid_alive "$pid"; then
+    clear_state
+    rm -f "$DEVFIX_TORRC"
+    ok "Removed stale Snowflake state."
+  elif [ -z "$selected" ]; then
+    rm -f "$DEVFIX_PID_FILE" "$DEVFIX_TORRC"
+    ok "Runtime state is clean."
+  else
+    ok "No stale runtime state detected."
+  fi
+  chmod 700 "$DEVFIX_STATE_ROOT" "$DEVFIX_RUN_DIR" "$DEVFIX_TOR_DATA_DIR" "$DEVFIX_LOG_DIR" 2>/dev/null || true
+  [ ! -f "$DEVFIX_CONFIG" ] || chmod 600 "$DEVFIX_CONFIG" 2>/dev/null || true
+}
+
+cmd_status() {
+  load_config
+  selected=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "disconnected")
+  started=$(file_get "$DEVFIX_STATE_FILE" STARTED "-")
+  pid=$(file_get "$DEVFIX_STATE_FILE" PID "")
+  port=$(file_get "$DEVFIX_STATE_FILE" SOCKS_PORT "")
+
+  printf 'DevFix %s\n' "$DEVFIX_VERSION"
+  if connection_alive; then
+    printf 'Status: connected\n'
+  else
+    printf 'Status: disconnected\n'
+  fi
+  printf 'Transport: %s\n' "$selected"
+  printf 'Started: %s\n' "$started"
+  if [ "$selected" = "snowflake" ]; then
+    printf 'Tor PID: %s\n' "${pid:-unknown}"
+    printf 'Local SOCKS: 127.0.0.1:%s\n' "${port:-unknown}"
+  elif [ "$selected" = "external-proxy" ] && [ -n "$EXTERNAL_PROXY" ]; then
+    printf 'External proxy: %s\n' "$(redact_proxy "$EXTERNAL_PROXY")"
+  fi
+}
+
+cmd_transport() {
+  action="${1:-list}"
+  case "$action" in
+    list)
+      printf 'direct          built-in   always available\n'
+      if snowflake_available; then
+        printf 'snowflake       built-in   available\n'
+      else
+        printf 'snowflake       built-in   not installed\n'
+      fi
+      load_config
+      if [ -n "$EXTERNAL_PROXY" ]; then
+        printf 'external-proxy  optional   configured\n'
+      else
+        printf 'external-proxy  optional   not configured\n'
+      fi
+      ;;
+    status) cmd_status ;;
+    auto) cmd_connect auto ;;
+    test)
+      target="${2:-direct}"
+      case "$target" in
+        direct) probe_network direct ;;
+        snowflake)
+          was_running=0
+          if [ "$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")" = "snowflake" ] && connection_alive; then
+            was_running=1
+          else
+            start_snowflake || return 1
+          fi
+          probe_network snowflake
+          result=$?
+          [ "$was_running" -eq 1 ] || cmd_disconnect >/dev/null 2>&1 || true
+          return "$result"
+          ;;
+        external-proxy) probe_network external-proxy ;;
+        *) usage_error "unknown transport: $target" ;;
+      esac
+      ;;
+    *) usage_error "usage: devfix transport {list|status|auto|test [name]}" ;;
+  esac
 }
 
 cmd_proxy() {
@@ -181,356 +573,274 @@ cmd_proxy() {
     set)
       [ "$#" -eq 2 ] || usage_error "usage: devfix proxy set <proxy-url>"
       validate_proxy_url "$2" || usage_error "proxy URL must use http://, https://, socks5:// or socks5h:// and include a port"
-      PROXY_URL="$2"
-      ENABLED=1
+      EXTERNAL_PROXY="$2"
       save_config
-      ok "Proxy saved and enabled: $(redact_proxy "$PROXY_URL")"
+      ok "External proxy saved: $(redact_proxy "$EXTERNAL_PROXY")"
       ;;
     clear)
-      PROXY_URL=""
-      ENABLED=0
+      EXTERNAL_PROXY=""
       save_config
-      ok "Proxy configuration cleared."
-      ;;
-    enable|on)
-      [ -n "$PROXY_URL" ] || die "no proxy configured; use: devfix proxy set <proxy-url>"
-      ENABLED=1
-      save_config
-      ok "Proxy enabled for DevFix-managed commands."
-      ;;
-    disable|off)
-      ENABLED=0
-      save_config
-      ok "Proxy disabled for DevFix-managed commands."
+      ok "External proxy cleared."
       ;;
     status)
-      printf 'Config: %s\n' "$DEVFIX_CONFIG"
-      if [ "$ENABLED" = "1" ]; then
-        printf 'Proxy: enabled\n'
+      if [ -n "$EXTERNAL_PROXY" ]; then
+        printf 'External proxy: %s\n' "$(redact_proxy "$EXTERNAL_PROXY")"
       else
-        printf 'Proxy: disabled\n'
+        printf 'External proxy: not configured\n'
       fi
-      if [ -n "$PROXY_URL" ]; then
-        printf 'URL: %s\n' "$(redact_proxy "$PROXY_URL")"
-      else
-        printf 'URL: not configured\n'
-      fi
-      printf 'NO_PROXY: %s\n' "$NO_PROXY_VALUE"
+      printf '%s\n' 'Note: an external proxy is optional; DevFix includes Snowflake.'
       ;;
-    detect)
-      detect_proxy
-      ;;
-    *) usage_error "unknown proxy action: $action" ;;
+    *) usage_error "usage: devfix proxy {set <url>|clear|status}" ;;
   esac
 }
 
-try_proxy_candidate() {
-  candidate="$1"
-  if ! command -v curl >/dev/null 2>&1; then
-    return 1
-  fi
-  code=$(curl -L -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 --proxy "$candidate" https://github.com/ 2>/dev/null || printf '000')
-  case "$code" in
-    2??|3??|401|403) return 0 ;;
-    *) return 1 ;;
+route_proxy_url() {
+  selected=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")
+  load_config
+  case "$selected" in
+    snowflake)
+      port=$(file_get "$DEVFIX_STATE_FILE" SOCKS_PORT "$SOCKS_PORT")
+      printf 'socks5h://127.0.0.1:%s' "$port"
+      ;;
+    external-proxy) printf '%s' "$EXTERNAL_PROXY" ;;
+    *) printf '' ;;
   esac
 }
 
-detect_proxy() {
-  info "Looking for an already-running local proxy..."
-  env_proxy="${ALL_PROXY:-${all_proxy:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}}}"
-  if [ -n "$env_proxy" ] && validate_proxy_url "$env_proxy" && try_proxy_candidate "$env_proxy"; then
-    ok "Working proxy found in the current environment: $(redact_proxy "$env_proxy")"
-    printf "Save it with:\n  devfix proxy set '%s'\n" "$(redact_proxy "$env_proxy")"
+apply_route_env() {
+  selected=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")
+  load_config
+  case "$selected" in
+    snowflake|external-proxy)
+      proxy=$(route_proxy_url)
+      [ -n "$proxy" ] || die "selected route has no proxy endpoint"
+      export http_proxy="$proxy" https_proxy="$proxy" all_proxy="$proxy"
+      export HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" ALL_PROXY="$proxy"
+      export no_proxy="$NO_PROXY_VALUE" NO_PROXY="$NO_PROXY_VALUE"
+      ;;
+    direct)
+      unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+      export no_proxy="$NO_PROXY_VALUE" NO_PROXY="$NO_PROXY_VALUE"
+      ;;
+    *) die "DevFix is not connected" ;;
+  esac
+}
+
+ensure_route() {
+  load_config
+  if connection_alive; then
     return 0
   fi
-
-  found=0
-  for port in 1080 7890 7891 8080 10808 2080; do
-    open=1
-    if command -v nc >/dev/null 2>&1; then
-      nc -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1 || open=0
-    fi
-    [ "$open" -eq 1 ] || continue
-
-    for scheme in socks5h http; do
-      candidate="$scheme://127.0.0.1:$port"
-      if try_proxy_candidate "$candidate"; then
-        ok "Working local proxy candidate: $candidate"
-        printf "To use it:\n  devfix proxy set '%s'\n" "$candidate"
-        found=1
-        break 2
-      fi
-    done
-  done
-
-  if [ "$found" -eq 0 ]; then
-    warn "No working local proxy was detected on common ports."
-    printf '%s\n' "DevFix is not a VPN. Start your existing proxy/VPN client, obtain its local HTTP/SOCKS5 address, then run:" \
-      "  devfix proxy set socks5h://127.0.0.1:PORT"
-    return 1
+  if [ "$AUTO_CONNECT" = "1" ]; then
+    cmd_connect "$TRANSPORT"
+    return $?
   fi
+  die "DevFix is disconnected; run: devfix connect"
 }
 
-cmd_mirror() {
-  action="${1:-status}"
-  load_config
-  case "$action" in
-    set-api)
-      [ "$#" -eq 2 ] || usage_error "usage: devfix mirror set-api <https-url>"
-      validate_http_url "$2" || usage_error "mirror URL must use http:// or https://"
-      HOMEBREW_API_DOMAIN_VALUE="$2"
-      save_config
-      ok "Homebrew API mirror saved."
-      ;;
-    set-artifact)
-      [ "$#" -eq 2 ] || usage_error "usage: devfix mirror set-artifact <https-url>"
-      validate_http_url "$2" || usage_error "mirror URL must use http:// or https://"
-      HOMEBREW_ARTIFACT_DOMAIN_VALUE="$2"
-      save_config
-      warn "Use only a mirror you trust; Homebrew downloads executable software through it."
-      ok "Homebrew artifact mirror saved."
-      ;;
-    clear)
-      HOMEBREW_API_DOMAIN_VALUE=""
-      HOMEBREW_ARTIFACT_DOMAIN_VALUE=""
-      save_config
-      ok "Homebrew mirror overrides cleared."
-      ;;
-    status)
-      printf 'Homebrew API mirror: %s\n' "${HOMEBREW_API_DOMAIN_VALUE:-default}"
-      printf 'Homebrew artifact mirror: %s\n' "${HOMEBREW_ARTIFACT_DOMAIN_VALUE:-default}"
-      ;;
-    *) usage_error "unknown mirror action: $action" ;;
-  esac
-}
-
-run_managed() {
-  [ "$#" -gt 0 ] || usage_error "usage: devfix run <command> [args...]"
-  load_config
-  if [ "$ENABLED" = "1" ] && [ -z "$PROXY_URL" ]; then
-    die "proxy is enabled but no URL is configured"
+classify_error_file() {
+  file="$1"
+  if grep -Eiq 'Could not resolve host|Name or service not known|nodename nor servname|Temporary failure in name resolution' "$file"; then
+    printf 'DNS_FAILURE'; return
   fi
-  apply_runtime_env
-  exec "$@"
+  if grep -Eiq 'certificate verify|SSL certificate|TLS handshake|SSL_ERROR|unable to get local issuer' "$file"; then
+    printf 'TLS_FAILURE'; return
+  fi
+  if grep -Eiq 'Operation timed out|timed out|Timeout was reached|Connection timed out' "$file"; then
+    printf 'TIMEOUT'; return
+  fi
+  if grep -Eiq 'No space left on device|disk full|not enough space' "$file"; then
+    printf 'DISK_SPACE'; return
+  fi
+  if grep -Eiq 'Command Line Tools|xcode-select|Xcode.*required|CLT' "$file"; then
+    printf 'XCODE_CLT_FAILURE'; return
+  fi
+  if grep -Eiq 'requires macOS|requires.*macOS|macOS .* or newer' "$file"; then
+    printf 'MACOS_TOO_OLD'; return
+  fi
+  if grep -Eiq 'unsupported macOS|does not support.*macOS|unsupported package|formula .* disabled' "$file"; then
+    printf 'PACKAGE_UNSUPPORTED'; return
+  fi
+  if grep -Eiq 'Tier 3|unsupported configuration|Homebrew.*unsupported' "$file"; then
+    printf 'HOMEBREW_COMPATIBILITY'; return
+  fi
+  if grep -Eiq 'build failed|CMake Error|make(\[[0-9]+\])?: \*\*\*|compiler.*error|Compilation failed' "$file"; then
+    printf 'BUILD_FAILURE'; return
+  fi
+  if grep -Eiq '403 Forbidden|451 Unavailable|Connection refused|Failed to connect|Connection reset|Recv failure|network is unreachable' "$file"; then
+    printf 'NETWORK_BLOCKED'; return
+  fi
+  printf 'UNKNOWN'
 }
 
-run_named_tool() {
-  tool="$1"
+run_tool_with_diagnosis() {
+  label="$1"
   shift
-  command -v "$tool" >/dev/null 2>&1 || die "$tool is not installed or not in PATH"
-  load_config
-  if [ "$ENABLED" = "1" ] && [ -z "$PROXY_URL" ]; then
-    die "proxy is enabled but no URL is configured"
+  ensure_route
+  apply_route_env
+  ensure_dirs
+  tmp="$DEVFIX_RUN_DIR/${label}.stderr.$$"
+  : > "$tmp"
+  log_line "tool=$label action=run"
+  "$@" 2>&1 | tee "$tmp"
+  rc=${PIPESTATUS[0]}
+  if [ "$rc" -ne 0 ]; then
+    kind=$(classify_error_file "$tmp")
+    printf 'DevFix diagnosis: %s\n' "$kind" >&2
+    log_line "tool=$label action=failed class=$kind exit=$rc"
   fi
-  apply_runtime_env
-  exec "$tool" "$@"
+  rm -f "$tmp"
+  return "$rc"
 }
 
-probe() {
-  mode="$1"
-  label="$2"
-  url="$3"
+cmd_run() {
+  [ "$#" -gt 0 ] || usage_error "usage: devfix run <command> [args...]"
+  ensure_route
+  apply_route_env
+  "$@"
+}
+
+cmd_brew() {
+  command -v brew >/dev/null 2>&1 || die "Homebrew is not installed or not in PATH"
+  run_tool_with_diagnosis brew brew "$@"
+}
+
+cmd_git() {
+  command -v git >/dev/null 2>&1 || die "git is not installed or not in PATH"
+  run_tool_with_diagnosis git git "$@"
+}
+
+cmd_curl() {
+  cb=$(curl_bin) || die "curl is not installed"
+  run_tool_with_diagnosis curl "$cb" "$@"
+}
+
+cmd_env() {
+  ensure_route
+  selected=$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")
   load_config
-
-  if ! command -v curl >/dev/null 2>&1; then
-    printf '  %-22s %s\n' "$label" "NO CURL"
-    PROBE_FAIL=$((PROBE_FAIL + 1))
-    return
+  if [ "$selected" = "direct" ]; then
+    cat <<'EOF_ENV'
+unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+EOF_ENV
+    return 0
   fi
+  proxy=$(route_proxy_url)
+  qproxy=$(shell_quote "$proxy")
+  qno=$(shell_quote "$NO_PROXY_VALUE")
+  printf 'export http_proxy=%s\n' "$qproxy"
+  printf 'export https_proxy=%s\n' "$qproxy"
+  printf 'export all_proxy=%s\n' "$qproxy"
+  printf 'export HTTP_PROXY=%s\n' "$qproxy"
+  printf 'export HTTPS_PROXY=%s\n' "$qproxy"
+  printf 'export ALL_PROXY=%s\n' "$qproxy"
+  printf 'export no_proxy=%s\n' "$qno"
+  printf 'export NO_PROXY=%s\n' "$qno"
+}
 
-  proxy_args=""
-  if [ "$mode" = "proxy" ]; then
-    if [ -z "$PROXY_URL" ]; then
-      printf '  %-22s %s\n' "$label" "NO PROXY"
-      PROBE_FAIL=$((PROBE_FAIL + 1))
-      return
-    fi
-    proxy_args="$PROXY_URL"
-  fi
-
-  if [ -n "$proxy_args" ]; then
-    code=$(curl -L -sS -o /dev/null -w '%{http_code}' --connect-timeout "$CONNECT_TIMEOUT" --max-time "$MAX_TIME" --proxy "$proxy_args" "$url" 2>/dev/null || printf '000')
+macos_support_label() {
+  os_version="$1"
+  arch="$2"
+  major=${os_version%%.*}
+  case "$major" in ''|*[!0-9]*) printf 'unknown'; return ;; esac
+  if [ "$arch" = "x86_64" ] && [ "$major" -le 13 ]; then
+    printf 'legacy (Homebrew Tier 3)'
+  elif [ "$major" -le 13 ]; then
+    printf 'legacy'
   else
-    code=$(curl -L -sS -o /dev/null -w '%{http_code}' --connect-timeout "$CONNECT_TIMEOUT" --max-time "$MAX_TIME" --noproxy '*' "$url" 2>/dev/null || printf '000')
+    printf 'current or newer'
   fi
-
-  case "$code" in
-    2??|3??)
-      printf '  %-22s OK (HTTP %s)\n' "$label" "$code"
-      PROBE_OK=$((PROBE_OK + 1))
-      ;;
-    401)
-      if [ "$label" = "Homebrew bottles" ]; then
-        printf '  %-22s REACHABLE (HTTP 401 expected)\n' "$label"
-        PROBE_OK=$((PROBE_OK + 1))
-      else
-        printf '  %-22s REACHABLE (HTTP 401)\n' "$label"
-        PROBE_WARN=$((PROBE_WARN + 1))
-      fi
-      ;;
-    403)
-      printf '  %-22s REACHABLE/DENIED (HTTP 403)\n' "$label"
-      PROBE_WARN=$((PROBE_WARN + 1))
-      ;;
-    000*)
-      printf '  %-22s FAIL (timeout/DNS/TLS/connect)\n' "$label"
-      PROBE_FAIL=$((PROBE_FAIL + 1))
-      ;;
-    *)
-      printf '  %-22s REACHABLE (HTTP %s)\n' "$label" "$code"
-      PROBE_WARN=$((PROBE_WARN + 1))
-      ;;
-  esac
-}
-
-os_major_version() {
-  value="$1"
-  printf '%s' "$value" | awk -F. '{print $1}'
 }
 
 cmd_doctor() {
-  offline=0
-  if [ "${1:-}" = "--offline" ]; then
-    offline=1
-  elif [ -n "${1:-}" ]; then
-    usage_error "usage: devfix doctor [--offline]"
-  fi
-
+  verbose=0
+  [ "${1:-}" != "--verbose" ] || verbose=1
   load_config
-  printf '%b%s %s%b\n' "$C_BOLD" "$DEVFIX_NAME" "$DEVFIX_VERSION" "$C_RESET"
-  printf '%s\n' "System"
-
+  printf 'DevFix %s\n\n' "$DEVFIX_VERSION"
+  printf 'System\n------\n'
   os_name=$(uname -s 2>/dev/null || printf unknown)
   arch=$(uname -m 2>/dev/null || printf unknown)
-  printf '  %-22s %s\n' "OS" "$os_name"
-  printf '  %-22s %s\n' "Architecture" "$arch"
-
+  printf 'OS ..................... %s\n' "$os_name"
+  printf 'Architecture ........... %s\n' "$arch"
   if [ "$os_name" = "Darwin" ]; then
-    mac_version=$(sw_vers -productVersion 2>/dev/null || printf unknown)
+    macver=$(sw_vers -productVersion 2>/dev/null || printf unknown)
     model=$(sysctl -n hw.model 2>/dev/null || printf unknown)
-    printf '  %-22s %s\n' "macOS" "$mac_version"
-    printf '  %-22s %s\n' "Mac model" "$model"
-    if [ "$arch" != "x86_64" ]; then
-      warn "  Note: DevFix is optimized for Intel Macs; this machine reports $arch."
-    fi
-    major=$(os_major_version "$mac_version")
-    case "$major" in
-      ''|*[!0-9]*) ;;
-      *)
-        if [ "$major" -le 13 ]; then
-          warn "  Homebrew note: this is a legacy macOS generation; modern bottle/formula availability may be limited."
-        fi
-        ;;
-    esac
-    if command -v xcode-select >/dev/null 2>&1 && xcode-select -p >/dev/null 2>&1; then
-      printf '  %-22s %s\n' "Command Line Tools" "installed"
-    else
-      printf '  %-22s %s\n' "Command Line Tools" "missing/unavailable"
-    fi
-  else
-    warn "  Note: DevFix targets macOS; diagnostics are running on a non-macOS host."
+    printf 'macOS .................. %s\n' "$macver"
+    printf 'Mac model .............. %s\n' "$model"
+    printf 'Homebrew support ....... %s\n' "$(macos_support_label "$macver" "$arch")"
   fi
 
-  printf '\n%s\n' "Developer tools"
-  if command -v curl >/dev/null 2>&1; then
-    printf '  %-22s %s\n' "curl" "$(command -v curl)"
-  else
-    printf '  %-22s %s\n' "curl" "missing"
-  fi
-  if command -v git >/dev/null 2>&1; then
-    printf '  %-22s %s\n' "git" "$(git --version 2>/dev/null || printf installed)"
-  else
-    printf '  %-22s %s\n' "git" "missing"
-  fi
+  printf '\nDeveloper tools\n---------------\n'
+  if command -v git >/dev/null 2>&1; then printf 'Git .................... OK\n'; else printf 'Git .................... MISSING\n'; fi
+  if curl_bin >/dev/null 2>&1; then printf 'curl ................... OK\n'; else printf 'curl ................... MISSING\n'; fi
   if command -v brew >/dev/null 2>&1; then
-    brew_version=$(brew --version 2>/dev/null | head -n 1)
-    brew_prefix=$(brew --prefix 2>/dev/null || printf unknown)
-    printf '  %-22s %s\n' "Homebrew" "${brew_version:-installed}"
-    printf '  %-22s %s\n' "Homebrew prefix" "$brew_prefix"
+    brewver=$(brew --version 2>/dev/null | head -n 1)
+    printf 'Homebrew ............... %s\n' "${brewver:-detected}"
   else
-    printf '  %-22s %s\n' "Homebrew" "not found"
+    printf 'Homebrew ............... NOT INSTALLED\n'
+  fi
+  if [ "$os_name" = "Darwin" ]; then
+    if xcode-select -p >/dev/null 2>&1; then printf 'Xcode CLT .............. OK\n'; else printf 'Xcode CLT .............. MISSING\n'; fi
   fi
 
-  printf '\n%s\n' "DevFix configuration"
-  if [ "$ENABLED" = "1" ]; then
-    printf '  %-22s %s\n' "Proxy mode" "enabled"
+  printf '\nDirect network\n--------------\n'
+  direct_ok=1
+  probe_network direct || direct_ok=0
+
+  printf '\nTransports\n----------\n'
+  printf '  %-20s %s\n' direct available
+  if snowflake_available; then
+    printf '  %-20s %s\n' snowflake available
   else
-    printf '  %-22s %s\n' "Proxy mode" "disabled"
+    printf '  %-20s %s\n' snowflake 'NOT INSTALLED'
   fi
-  if [ -n "$PROXY_URL" ]; then
-    printf '  %-22s %s\n' "Proxy URL" "$(redact_proxy "$PROXY_URL")"
+  if [ -n "$EXTERNAL_PROXY" ]; then
+    printf '  %-20s %s\n' external-proxy configured
   else
-    printf '  %-22s %s\n' "Proxy URL" "not configured"
-  fi
-  printf '  %-22s %s\n' "API mirror" "${HOMEBREW_API_DOMAIN_VALUE:-default}"
-  printf '  %-22s %s\n' "Artifact mirror" "${HOMEBREW_ARTIFACT_DOMAIN_VALUE:-default}"
-
-  if [ "$offline" -eq 1 ]; then
-    printf '\nNetwork checks skipped (--offline).\n'
-    return 0
+    printf '  %-20s %s\n' external-proxy optional
   fi
 
-  printf '\n%s\n' "Direct network"
-  PROBE_OK=0
-  PROBE_WARN=0
-  PROBE_FAIL=0
-  probe direct "GitHub" "https://github.com/"
-  probe direct "GitHub API" "https://api.github.com/"
-  probe direct "Homebrew API" "https://formulae.brew.sh/api/formula.jws.json"
-  probe direct "Homebrew bottles" "https://ghcr.io/v2/"
-  direct_ok=$PROBE_OK
-  direct_warn=$PROBE_WARN
-  direct_fail=$PROBE_FAIL
+  printf '\nCurrent route\n-------------\n'
+  cmd_status | sed 's/^/  /'
 
-  proxy_ok=0
-  proxy_warn=0
-  proxy_fail=0
-  if [ -n "$PROXY_URL" ]; then
-    printf '\n%s\n' "Proxy network"
-    PROBE_OK=0
-    PROBE_WARN=0
-    PROBE_FAIL=0
-    probe proxy "GitHub" "https://github.com/"
-    probe proxy "GitHub API" "https://api.github.com/"
-    probe proxy "Homebrew API" "https://formulae.brew.sh/api/formula.jws.json"
-    probe proxy "Homebrew bottles" "https://ghcr.io/v2/"
-    proxy_ok=$PROBE_OK
-    proxy_warn=$PROBE_WARN
-    proxy_fail=$PROBE_FAIL
-  fi
-
-  printf '\n%s\n' "Assessment"
-  if [ "$direct_fail" -gt 0 ] && [ "$proxy_ok" -gt "$direct_ok" ]; then
-    ok "  Proxy path is materially healthier than the direct path. Network filtering/routing is likely part of the problem."
-  elif [ "$direct_fail" -eq 0 ]; then
-    ok "  Tested Homebrew/GitHub endpoints are reachable directly. A failing install may be compatibility, package, certificate, or toolchain related."
-  elif [ -n "$PROXY_URL" ] && [ "$proxy_fail" -gt 0 ]; then
-    warn "  Direct and proxy paths both have failures. Check the upstream proxy/VPN, DNS, TLS certificates, or service availability."
+  printf '\nAssessment\n----------\n'
+  if [ "$direct_ok" -eq 1 ]; then
+    printf 'Primary issue: DIRECT NETWORK OK\n'
+    printf 'Recommendation: use direct; DevFix will avoid unnecessary tunneling.\n'
+  elif snowflake_available; then
+    printf 'Primary issue: NETWORK_BLOCKED_OR_UNREACHABLE\n'
+    printf 'Recommendation: run `devfix connect`; auto mode will try built-in Snowflake.\n'
   else
-    warn "  Direct path has failures. Configure a working HTTP/SOCKS5 proxy and run doctor again."
+    printf 'Primary issue: NETWORK_BLOCKED_OR_UNREACHABLE\n'
+    printf 'Recommendation: reinstall the self-contained DevFix package; Snowflake payload is missing.\n'
   fi
 
-  if [ "$direct_warn" -gt 0 ] || [ "$proxy_warn" -gt 0 ]; then
-    warn "  One or more endpoints were reachable but returned an HTTP denial/error; transport works, but service policy/authentication may still block the request."
+  if [ "$verbose" -eq 1 ]; then
+    printf '\nPaths\n-----\n'
+    printf 'State: %s\n' "$DEVFIX_STATE_ROOT"
+    printf 'Logs: %s\n' "$DEVFIX_LOG_DIR"
+    printf 'Tor: %s\n' "$DEVFIX_TOR_BIN"
+    printf 'Lyrebird: %s\n' "$DEVFIX_LYREBIRD_BIN"
   fi
 }
 
-cmd_test_url() {
-  mode="direct"
-  if [ "${1:-}" = "--proxy" ]; then
-    mode="proxy"
-    shift
-  elif [ "${1:-}" = "--direct" ]; then
-    shift
+cmd_uninstall() {
+  script="/usr/local/share/devfix/uninstall.sh"
+  [ -x "$script" ] || die "installed uninstaller not found at $script"
+  exec "$script" "$@"
+}
+
+cmd_logs() {
+  lines=80
+  if [ "${1:-}" = "--tail" ]; then
+    [ "$#" -eq 2 ] || usage_error "usage: devfix logs [--tail N]"
+    lines="$2"
   fi
-  [ "$#" -eq 1 ] || usage_error "usage: devfix test-url [--direct|--proxy] <url>"
-  validate_http_url "$1" || usage_error "URL must use http:// or https://"
-  PROBE_OK=0
-  PROBE_WARN=0
-  PROBE_FAIL=0
-  probe "$mode" "Target" "$1"
-  [ "$PROBE_FAIL" -eq 0 ]
+  ensure_dirs
+  printf '== DevFix ==\n'
+  tail -n "$lines" "$DEVFIX_LOG" 2>/dev/null || true
+  printf '\n== Tor/Snowflake ==\n'
+  tail -n "$lines" "$DEVFIX_TOR_LOG" 2>/dev/null || true
 }
 
 cmd_config() {
@@ -538,93 +848,86 @@ cmd_config() {
   load_config
   case "$action" in
     show)
-      printf 'Config file: %s\n' "$DEVFIX_CONFIG"
-      printf 'Proxy enabled: %s\n' "$ENABLED"
-      printf 'Proxy URL: %s\n' "$(if [ -n "$PROXY_URL" ]; then redact_proxy "$PROXY_URL"; else printf 'not configured'; fi)"
-      printf 'NO_PROXY: %s\n' "$NO_PROXY_VALUE"
-      printf 'Connect timeout: %ss\n' "$CONNECT_TIMEOUT"
-      printf 'Max request time: %ss\n' "$MAX_TIME"
-      printf 'Homebrew API mirror: %s\n' "${HOMEBREW_API_DOMAIN_VALUE:-default}"
-      printf 'Homebrew artifact mirror: %s\n' "${HOMEBREW_ARTIFACT_DOMAIN_VALUE:-default}"
+      printf 'TRANSPORT=%s\n' "$TRANSPORT"
+      printf 'EXTERNAL_PROXY=%s\n' "$(redact_proxy "$EXTERNAL_PROXY")"
+      printf 'SOCKS_PORT=%s\n' "$SOCKS_PORT"
+      printf 'CONNECT_TIMEOUT=%s\n' "$CONNECT_TIMEOUT"
+      printf 'MAX_TIME=%s\n' "$MAX_TIME"
+      printf 'AUTO_CONNECT=%s\n' "$AUTO_CONNECT"
       ;;
-    path) printf '%s\n' "$DEVFIX_CONFIG" ;;
-    *) usage_error "unknown config action: $action" ;;
+    set-transport)
+      [ "$#" -eq 2 ] || usage_error "usage: devfix config set-transport <auto|direct|snowflake|external-proxy>"
+      case "$2" in auto|direct|snowflake|external-proxy) TRANSPORT="$2" ;; *) usage_error "invalid transport" ;; esac
+      save_config
+      ok "Default transport set to $TRANSPORT."
+      ;;
+    set-auto-connect)
+      [ "$#" -eq 2 ] || usage_error "usage: devfix config set-auto-connect <0|1>"
+      case "$2" in 0|1) AUTO_CONNECT="$2" ;; *) usage_error "value must be 0 or 1" ;; esac
+      save_config
+      ok "AUTO_CONNECT=$AUTO_CONNECT"
+      ;;
+    *) usage_error "usage: devfix config {show|set-transport ...|set-auto-connect 0|1}" ;;
   esac
 }
 
 print_help() {
-  cat <<'HELPEOF'
-DevFix for Mac Intel — Homebrew and developer-network helper
-
-DevFix is NOT a VPN. It safely applies an existing HTTP/SOCKS5 proxy to
-Homebrew, git, curl, and arbitrary developer commands, while diagnosing
-whether failures are caused by connectivity or by local compatibility.
+  cat <<'EOF_HELP'
+DevFix 2.0.0 - built-in developer-network routing for Intel macOS
 
 Usage:
-  devfix doctor [--offline]              Diagnose macOS, Homebrew and network paths
-  devfix proxy set <url>                 Save and enable a proxy
-  devfix proxy detect                    Look for an already-running local proxy
-  devfix proxy status                    Show proxy status (credentials redacted)
-  devfix proxy enable|disable            Toggle proxy use by DevFix-managed commands
-  devfix proxy clear                     Remove the saved proxy
-  devfix on | off                        Short aliases for proxy enable/disable
+  devfix doctor [--verbose]
+  devfix connect [auto|direct|snowflake|external-proxy]
+  devfix disconnect
+  devfix restart
+  devfix status
+  devfix repair
+  devfix transport {list|status|auto|test [name]}
+  devfix brew <args...>
+  devfix git <args...>
+  devfix curl <args...>
+  devfix run <command> [args...]
+  devfix env
+  devfix proxy {set <url>|clear|status}
+  devfix config {show|set-transport <name>|set-auto-connect <0|1>}
+  devfix logs [--tail N]
+  devfix uninstall [--purge]
+  devfix version
 
-  devfix run <command> [args...]         Run any command with DevFix networking
-  devfix brew [args...]                  Run Homebrew with DevFix networking
-  devfix git [args...]                   Run git with DevFix networking
-  devfix curl [args...]                  Run curl with DevFix networking
-
-  devfix env                             Print shell exports for: eval "$(devfix env)"
-  devfix env --unset                     Print shell commands that clear DevFix variables
-  devfix test-url [--proxy] <url>        Test one endpoint
-
-  devfix mirror set-api <url>            Set HOMEBREW_API_DOMAIN
-  devfix mirror set-artifact <url>       Set HOMEBREW_ARTIFACT_DOMAIN
-  devfix mirror status                   Show Homebrew mirror overrides
-  devfix mirror clear                    Clear mirror overrides
-
-  devfix config show|path                Show safe configuration or its path
-  devfix version                         Print version
-  devfix help                            Show this help
-
-Examples:
-  devfix proxy detect
-  devfix proxy set socks5h://127.0.0.1:7890
+Quick start:
   devfix doctor
+  devfix connect
   devfix brew update
-  devfix brew install ffmpeg
-  devfix run ruby --version
-  eval "$(devfix env)"                   # apply to the current shell
-  eval "$(devfix env --unset)"           # remove from the current shell
 
-Notes:
-  * 'devfix on' affects commands launched through DevFix. A child process cannot
-    modify the environment of your already-running shell; use 'devfix env' for that.
-  * Proxy credentials are stored locally only when you put them in the saved URL.
-    The config file is created with mode 600 and status output redacts credentials.
-HELPEOF
+DevFix includes a Snowflake/Tor transport in its self-contained macOS package.
+It does not require you to already own a VPN, proxy, or VPS. An external proxy
+can still be configured as an optional advanced fallback.
+EOF_HELP
 }
 
 main() {
-  command_name="${1:-help}"
-  if [ "$#" -gt 0 ]; then shift; fi
-
-  case "$command_name" in
+  cmd="${1:-help}"
+  [ "$#" -eq 0 ] || shift
+  case "$cmd" in
     help|-h|--help) print_help ;;
-    version|-V|--version) printf '%s\n' "$DEVFIX_VERSION" ;;
-    doctor|diagnose) cmd_doctor "$@" ;;
+    version|-v|--version) printf '%s %s\n' "$DEVFIX_NAME" "$DEVFIX_VERSION" ;;
+    doctor) cmd_doctor "$@" ;;
+    connect) cmd_connect "$@" ;;
+    disconnect) cmd_disconnect "$@" ;;
+    restart) cmd_restart "$@" ;;
+    status) cmd_status "$@" ;;
+    repair) cmd_repair "$@" ;;
+    transport) cmd_transport "$@" ;;
     proxy) cmd_proxy "$@" ;;
-    on) cmd_proxy enable ;;
-    off) cmd_proxy disable ;;
-    mirror) cmd_mirror "$@" ;;
-    env) print_env "$@" ;;
-    run) run_managed "$@" ;;
-    brew) run_named_tool brew "$@" ;;
-    git) run_named_tool git "$@" ;;
-    curl) run_named_tool curl "$@" ;;
-    test-url) cmd_test_url "$@" ;;
     config) cmd_config "$@" ;;
-    *) usage_error "unknown command: $command_name" ;;
+    env) cmd_env "$@" ;;
+    logs) cmd_logs "$@" ;;
+    uninstall) cmd_uninstall "$@" ;;
+    brew) cmd_brew "$@" ;;
+    git) cmd_git "$@" ;;
+    curl) cmd_curl "$@" ;;
+    run) cmd_run "$@" ;;
+    *) usage_error "unknown command: $cmd" ;;
   esac
 }
 

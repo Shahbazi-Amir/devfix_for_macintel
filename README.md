@@ -1,266 +1,237 @@
 # DevFix for Mac Intel
 
-DevFix is a small, dependency-free CLI for diagnosing and reducing Homebrew/GitHub connectivity problems on older Intel Macs — especially when direct access to developer infrastructure is filtered, unreliable, or intermittently blocked.
+DevFix is a self-contained command-line networking helper for older Intel Macs used for software development. It is designed for cases where Homebrew, GitHub, Homebrew bottles, Ruby downloads, FFmpeg dependencies, or similar developer resources are unreachable or unreliable from the user's network.
 
-**DevFix is not a VPN.** It uses an HTTP/SOCKS5 proxy or tunnel that you already have and applies it only to developer commands you choose. It also separates network failures from genuine old-macOS/Homebrew compatibility failures.
+**DevFix 2.x does not require an existing VPN, proxy, or VPS.** Its macOS release package bundles the Tor Project's official x86_64 Tor Expert Bundle and uses the built-in Snowflake pluggable transport when direct access fails.
 
-## Why this exists
+## What DevFix is
 
-A legacy Intel Mac can hit two very different classes of failure:
+- A process-scoped network route manager for `brew`, `git`, `curl`, and arbitrary CLI commands.
+- A network and compatibility diagnostic tool for Intel macOS.
+- A self-contained Snowflake/Tor client for developer traffic.
+- A conservative wrapper that does not disable TLS verification or rewrite macOS system networking.
 
-1. **Network path failures** — GitHub, Homebrew API, GHCR bottles, Ruby sources, or other downloads time out or are filtered.
-2. **Compatibility failures** — the current package has no bottle for the OS/CPU, requires a newer macOS, or cannot build with the installed toolchain.
+## What DevFix is not
 
-Retrying `brew update` cannot tell you which class you are in. DevFix can.
+- It is not a system-wide consumer VPN.
+- It does not route Safari or every app on the Mac.
+- It cannot make software compatible with an unsupported macOS version.
+- It cannot guarantee that Snowflake will work on every network or at every moment.
 
-As of August 2026, Homebrew documents macOS Monterey-era Intel systems as a legacy/Tier-3 class and has announced a broader Intel phase-out. DevFix can improve the network path; it cannot reverse Homebrew or formula compatibility policy.
+## Target systems
 
-## Features
+Primary target:
 
-- No Homebrew dependency — useful even when Homebrew is the broken component.
-- Works as a normal terminal command: `devfix`.
-- HTTP, HTTPS, SOCKS5, and SOCKS5-with-remote-DNS proxy URLs.
-- Direct vs proxy health checks for GitHub, GitHub API, Homebrew API, and GHCR.
-- `devfix brew ...`, `devfix git ...`, `devfix curl ...`, and `devfix run ...` wrappers.
-- Optional Homebrew API/artifact mirror support using Homebrew's documented environment variables.
-- No global macOS network changes and no permanent global Git proxy changes.
-- Proxy credentials are redacted from status output.
-- Installer/uninstaller, man page, tests, Intel-macOS CI, `.pkg` builder, tarball, and SHA-256 checksums.
+- Intel x86_64 Mac
+- MacBook Pro 2015 class hardware
+- macOS Monterey 12.x
 
-## Install
+The bundled Tor software currently supports macOS 10.15 and later. Homebrew treats older macOS releases such as Monterey as legacy/Tier 3, so some formula failures may be compatibility problems rather than network problems.
 
-### Option A — repository installer
+## Installation
 
-Download/clone the repository, then:
+### Recommended: macOS installer
 
-```sh
-cd devfix_for_macintel
-./install.sh
+Download the release artifact named:
+
+```text
+DevFix-2.0.0-macos-x86_64.pkg
 ```
 
-This installs:
+Open it and complete the macOS installer. The package installs:
 
 ```text
 /usr/local/bin/devfix
+/usr/local/libexec/devfix/tor/
+/usr/local/share/devfix/
 /usr/local/share/man/man1/devfix.1
 ```
 
-Homebrew is not required.
+The package is currently not Developer ID signed/notarized unless a signing certificate is configured in the release pipeline. Do not bypass macOS security globally; use the normal macOS per-file approval flow if Gatekeeper asks for confirmation.
 
-### Option B — `.pkg`
+### Portable tarball
 
-The GitHub Actions **Package** workflow builds:
+The release also contains a self-contained tarball. Extract it and run:
 
-```text
-DevFix-1.0.0.pkg
-DevFix-1.0.0.tar.gz
-SHA256SUMS
+```bash
+./install.sh
 ```
 
-The CI-created package is unsigned unless a Developer ID Installer certificate is added separately. On a personal machine, the repository installer is the simplest path.
+This installs the same payload and does not require Homebrew.
 
-## 60-second setup
+## Quick start
 
-First see whether your existing VPN/proxy client exposes a local proxy:
-
-```sh
-devfix proxy detect
-```
-
-Or configure it explicitly, for example:
-
-```sh
-devfix proxy set socks5h://127.0.0.1:7890
-```
-
-Then diagnose both paths:
-
-```sh
+```bash
 devfix doctor
+devfix connect
+devfix brew update
 ```
 
-Use Homebrew through DevFix:
+`connect` defaults to `auto`:
 
-```sh
+1. Test direct access to GitHub, Homebrew API, and Homebrew bottles.
+2. If direct access works, use it with no tunnel.
+3. If direct access is incomplete, start the bundled Snowflake/Tor transport.
+4. If the user explicitly configured an external proxy, it remains available as an optional advanced fallback.
+
+## Homebrew
+
+```bash
 devfix brew update
+devfix brew upgrade
 devfix brew install ffmpeg
 ```
 
-Use any other installer through the same environment:
+DevFix applies routing only inside the Homebrew process tree. It does not permanently change macOS System Proxy settings.
 
-```sh
-devfix run <command> <args...>
-```
-
-## Typical output
+If Homebrew fails, DevFix classifies common failures such as:
 
 ```text
-DevFix 1.0.0
-System
-  OS                     Darwin
-  Architecture           x86_64
-  macOS                  12.7.x
-  Command Line Tools     installed
-
-Direct network
-  GitHub                 FAIL (timeout/DNS/TLS/connect)
-  GitHub API             FAIL (timeout/DNS/TLS/connect)
-  Homebrew API           OK (HTTP 200)
-  Homebrew bottles       FAIL (timeout/DNS/TLS/connect)
-
-Proxy network
-  GitHub                 OK (HTTP 200)
-  GitHub API             OK (HTTP 200)
-  Homebrew API           OK (HTTP 200)
-  Homebrew bottles       REACHABLE (HTTP 401 expected)
-
-Assessment
-  Proxy path is materially healthier than the direct path.
+DNS_FAILURE
+TLS_FAILURE
+TIMEOUT
+NETWORK_BLOCKED
+HOMEBREW_COMPATIBILITY
+PACKAGE_UNSUPPORTED
+BUILD_FAILURE
+XCODE_CLT_FAILURE
+DISK_SPACE
+UNKNOWN
 ```
 
-## Commands
+## Git and curl
 
-```text
-devfix doctor [--offline]
-devfix proxy set <url>
-devfix proxy detect
-devfix proxy status
-devfix proxy enable|disable
-devfix proxy clear
-devfix on | off
-
-devfix run <command> [args...]
-devfix brew [args...]
-devfix git [args...]
-devfix curl [args...]
-
-devfix env
-devfix env --unset
-devfix test-url [--direct|--proxy] <url>
-
-devfix mirror set-api <url>
-devfix mirror set-artifact <url>
-devfix mirror status
-devfix mirror clear
-
-devfix config show|path
-devfix version
-devfix help
+```bash
+devfix git clone https://github.com/OWNER/REPO.git
+devfix git fetch
+devfix curl https://example.com/file
 ```
 
-## `on` versus current-shell exports
+Any other CLI command can be run inside the active route:
 
-`devfix on` means subsequent commands launched **through DevFix** use the configured proxy:
-
-```sh
-devfix on
-devfix brew update
+```bash
+devfix run ruby-install ...
+devfix run npm install
 ```
 
-A child process cannot modify your existing shell. If you intentionally want the current terminal session to inherit the variables:
+## Connection controls
 
-```sh
-eval "$(devfix env)"
+```bash
+devfix connect
+devfix connect snowflake
+devfix connect direct
+devfix status
+devfix restart
+devfix disconnect
+devfix repair
 ```
 
-Remove them later with:
+## Transport controls
 
-```sh
-eval "$(devfix env --unset)"
+```bash
+devfix transport list
+devfix transport status
+devfix transport test direct
+devfix transport test snowflake
+devfix transport auto
 ```
 
-## Homebrew mirrors
+Available transport model:
 
-A proxy is usually the first choice. DevFix also supports Homebrew's documented mirror variables for environments that have a trusted caching/proxy repository:
+- `direct`: no tunnel; preferred when all critical developer endpoints are reachable.
+- `snowflake`: built-in Tor + Snowflake route bundled in the installer.
+- `external-proxy`: optional user-supplied HTTP/SOCKS proxy, not required for normal use.
 
-```sh
-devfix mirror set-api https://trusted.example/homebrew-api
-devfix mirror set-artifact https://trusted.example/homebrew
+## How Snowflake works here
+
+Tor Project documents Snowflake as a censorship-circumvention pluggable transport that can be used without obtaining bridge addresses. DevFix runs the bundled `tor` daemon with the bundled `lyrebird` transport and exposes a local SOCKS endpoint only to DevFix-managed processes.
+
+The release build downloads the official Tor Expert Bundle from Tor Project's package archive, verifies its SHA-256 against Tor's published checksum manifest, and then embeds it into the `.pkg` and portable tarball.
+
+## Doctor
+
+```bash
+devfix doctor
+devfix doctor --verbose
 ```
 
-DevFix intentionally ships with **no third-party mirror configured**. An artifact mirror can distribute executable code; choose it yourself and use only infrastructure you trust.
+Doctor reports:
 
-## What DevFix can fix
+- architecture and macOS version
+- Git, curl, Homebrew, and Xcode CLT presence
+- direct reachability to GitHub, Homebrew API, bottles, and Ruby downloads
+- built-in transport availability
+- active DevFix route
+- Homebrew legacy compatibility warning
 
-| Problem | Can DevFix help? |
-|---|---|
-| `brew update` cannot reach GitHub | Yes, if a working upstream proxy/tunnel is available |
-| Homebrew API timeouts | Yes, proxy or trusted API mirror |
-| GHCR/bottle downloads blocked | Yes, proxy or trusted artifact mirror |
-| `git clone/fetch` over HTTPS fails because of network filtering | Yes |
-| `curl`/Ruby installer downloads fail because of the same network path | Usually yes |
-| Intermittent direct routing to developer endpoints | Helps diagnose and route selected commands |
-| Formula requires a newer macOS | No |
-| No compatible bottle exists for Intel/old macOS | No (source builds may or may not work) |
-| Xcode Command Line Tools are missing/too old | Diagnoses it; does not fabricate a compatible toolchain |
-| Source build itself is broken | No; DevFix helps prove the network is not the cause |
+A failed direct probe means an endpoint is unreachable; it is not by itself proof that censorship is the cause. DevFix deliberately reports `NETWORK_BLOCKED_OR_UNREACHABLE` rather than making an unsupported attribution.
 
-## Constrained/filtered networks
+## Optional external proxy
 
-DevFix is designed for networks where some developer domains work directly while others time out or are denied. It does not force the whole Mac through a tunnel. That makes it useful when you want only Homebrew/Git/curl traffic to use an existing local proxy.
+Not required, but retained for advanced use:
 
-It does **not** provide an upstream VPN server, hide all system traffic, or make claims about access to services that block users for policy/account/region reasons.
-
-## Configuration and security
-
-Default config:
-
-```text
-~/.config/devfix/config
+```bash
+devfix proxy set socks5h://127.0.0.1:1080
+devfix connect external-proxy
 ```
 
-DevFix creates it with restrictive permissions where the filesystem supports them. If you save a proxy URL containing `user:password@host`, those credentials exist in that file. Status output redacts them.
+Credentials in proxy URLs are redacted from status output and logs.
 
-DevFix does not:
+## Logs
 
-- disable TLS verification;
-- install root certificates;
-- change `/etc/hosts`;
-- alter macOS system proxy settings;
-- write a global Git proxy setting;
-- automatically trust third-party Homebrew mirrors.
+```bash
+devfix logs
+devfix logs --tail 200
+```
+
+DevFix logs lifecycle and failure classifications, not full command arguments. Tor's notice log is kept separately. Avoid posting logs publicly without reviewing them first.
+
+## Security principles
+
+DevFix does **not**:
+
+- use `curl -k`
+- disable Git TLS verification
+- disable Gatekeeper or SIP
+- install custom root certificates
+- edit `/etc/hosts`
+- permanently change macOS DNS or System Proxy settings
+- silently choose third-party Homebrew mirrors
 
 See [SECURITY.md](SECURITY.md).
 
 ## Uninstall
 
-```sh
-./uninstall.sh
+```bash
+sudo /usr/local/share/devfix/uninstall.sh
 ```
 
-Configuration is preserved by default. Remove it too with:
+Or:
 
-```sh
-./uninstall.sh --purge
+```bash
+devfix uninstall
 ```
 
-## Development
+Program files are removed while user state/logs are kept. To also delete state and logs:
 
-Run syntax checks and tests without Homebrew:
-
-```sh
-bash -n bin/devfix install.sh uninstall.sh scripts/*.sh tests/*.sh
-./tests/test_devfix.sh
+```bash
+devfix uninstall --purge
 ```
 
-Build a tarball on macOS/Linux:
+## Limitations
 
-```sh
-./scripts/build-dist.sh
-```
+- Snowflake depends on volunteer and Tor infrastructure and is not guaranteed to connect on every network.
+- Tor routes are normally slower than direct broadband and may be noticeably slower for large Homebrew bottles or FFmpeg downloads.
+- Homebrew on Monterey/Intel is a legacy configuration; DevFix cannot create bottles that upstream does not publish or fix source code that no longer builds on that OS.
+- The current installer is unsigned unless Apple Developer signing credentials are configured.
 
-Build a macOS installer package on macOS:
+## Upstream references
 
-```sh
-./scripts/build-pkg.sh
-```
+- Tor Project Snowflake: `https://snowflake.torproject.org/`
+- Tor Project bridge/transport documentation: `https://support.torproject.org/little-t-tor/circumvention/using-bridges/`
+- Tor Expert Bundle downloads: `https://www.torproject.org/download/tor/`
+- Homebrew support tiers: `https://docs.brew.sh/Support-Tiers`
 
-## References
+## License
 
-- Homebrew manual: proxy variables, `HOMEBREW_API_DOMAIN`, and `HOMEBREW_ARTIFACT_DOMAIN`: <https://docs.brew.sh/Manpage>
-- Homebrew support tiers: <https://docs.brew.sh/Support-Tiers>
-- GitHub-hosted runner reference: <https://docs.github.com/en/actions/reference/runners/github-hosted-runners>
-
-## Design principle
-
-DevFix should fail safely. It prefers scoped process environment variables over permanent system changes, never chooses a third-party software mirror on the user's behalf, and never reports a compatibility failure as a network success story.
+DevFix source is MIT licensed. Bundled Tor Project components remain under their upstream licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -1,56 +1,63 @@
-.TH DEVFIX 1 "August 2026" "DevFix 1.0.0" "User Commands"
+.TH DEVFIX 1 "August 2026" "DevFix 2.0.0" "User Commands"
 .SH NAME
-devfix \- network and compatibility helper for Homebrew on Intel macOS
+devfix \- built-in developer-network routing for Intel macOS
 .SH SYNOPSIS
 .B devfix
 .I command
 .RI [ arguments ]
 .SH DESCRIPTION
-DevFix applies an existing HTTP or SOCKS5 proxy to developer commands without changing the global macOS network configuration. It also diagnoses direct and proxied access to GitHub, the Homebrew API, and Homebrew bottle storage.
-.PP
-DevFix is not a VPN and does not provide an upstream proxy server.
+DevFix diagnoses developer-network failures and routes selected command-line tools through direct networking or a bundled Tor/Snowflake transport. It does not require an existing VPN or proxy and does not modify macOS system-wide proxy or DNS settings.
 .SH COMMANDS
 .TP
-.B doctor [--offline]
-Show system, Homebrew, developer-tool, proxy and endpoint diagnostics.
+.B doctor [--verbose]
+Inspect system, developer tools, direct endpoint reachability, transport availability, and legacy Homebrew compatibility.
 .TP
-.B proxy set URL
-Save and enable a proxy URL using http, https, socks5, or socks5h.
+.B connect [auto|direct|snowflake|external-proxy]
+Establish a developer route. Auto prefers direct access and falls back to bundled Snowflake.
 .TP
-.B proxy detect
-Try to locate an already-running proxy on common localhost ports.
+.B disconnect
+Stop DevFix-owned transport processes and clear runtime state.
 .TP
-.B proxy status
-Show configuration with proxy credentials redacted.
+.B status
+Display connection and transport state.
 .TP
-.B on | off
-Enable or disable proxy use for commands launched by DevFix.
+.B repair
+Remove stale DevFix runtime state.
+.TP
+.B transport list|status|auto|test
+Inspect and test route backends.
+.TP
+.B brew ARGS...
+Run Homebrew inside the selected DevFix route and classify common failures.
+.TP
+.B git ARGS...
+Run Git inside the selected route.
+.TP
+.B curl ARGS...
+Run curl inside the selected route.
 .TP
 .B run COMMAND [ARGS...]
-Run an arbitrary command with DevFix-managed environment variables.
+Run another CLI command inside the selected route.
 .TP
-.B brew [ARGS...]
-Run Homebrew with DevFix-managed environment variables.
+.B proxy set URL
+Configure an optional external HTTP/SOCKS proxy fallback.
 .TP
-.B git [ARGS...]
-Run git with DevFix-managed environment variables.
+.B logs [--tail N]
+Show DevFix and Tor notice logs.
 .TP
-.B curl [ARGS...]
-Run curl with DevFix-managed environment variables.
-.TP
-.B env [--unset]
-Print shell commands suitable for eval to apply or clear DevFix variables in the current shell.
-.TP
-.B mirror set-api URL
-Set HOMEBREW_API_DOMAIN.
-.TP
-.B mirror set-artifact URL
-Set HOMEBREW_ARTIFACT_DOMAIN. Only use a trusted mirror.
+.B uninstall [--purge]
+Run the installed uninstaller. Purge also removes per-user DevFix state and logs.
 .SH FILES
 .TP
-.I ~/.config/devfix/config
-Default per-user configuration file. Created with restrictive permissions.
+.I ~/Library/Application Support/DevFix
+Per-user configuration, Tor data, and runtime state.
+.TP
+.I ~/Library/Logs/DevFix
+DevFix and Tor logs.
+.TP
+.I /usr/local/libexec/devfix/tor
+Bundled Tor Expert Bundle payload.
 .SH SECURITY
-Proxy credentials embedded in a URL are stored in the configuration file. DevFix redacts them from status output. Prefer a local unauthenticated proxy when possible.
-.SH SEE ALSO
-brew(1), git(1), curl(1)
+DevFix does not intentionally disable TLS verification, install root certificates, edit /etc/hosts, disable Gatekeeper or SIP, or permanently change system network settings.
+.SH LIMITATIONS
+Snowflake is a censorship-circumvention transport, not a performance guarantee. It may be slower than direct networking and may not work on every network. DevFix cannot fix software that no longer supports the installed macOS version.

@@ -1,27 +1,23 @@
 #!/bin/bash
-set -eu
-
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+set -euo pipefail
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 VERSION=$(cat "$ROOT/VERSION")
-OUT="${1:-$ROOT/dist}"
-STAGE="$ROOT/build/DevFix-$VERSION"
+DIST="$ROOT/dist"
+BUILD="$ROOT/build"
+VENDOR="$BUILD/vendor/tor"
+PORTABLE="$BUILD/portable/DevFix-${VERSION}"
 
-rm -rf "$STAGE"
-mkdir -p "$STAGE/bin" "$STAGE/man" "$STAGE/docs" "$OUT"
-cp "$ROOT/bin/devfix" "$STAGE/bin/devfix"
-cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$ROOT/README.md" "$ROOT/CHANGELOG.md" "$STAGE/"
-cp "$ROOT/man/devfix.1" "$STAGE/man/"
-cp "$ROOT/docs/architecture.md" "$ROOT/docs/troubleshooting.md" "$STAGE/docs/"
+rm -rf "$DIST" "$BUILD/portable"
+mkdir -p "$DIST" "$PORTABLE/bin" "$PORTABLE/libexec/devfix" "$PORTABLE/share/man/man1" "$PORTABLE/share/devfix"
 
-(
-  cd "$(dirname "$STAGE")"
-  tar -czf "$OUT/DevFix-$VERSION.tar.gz" "$(basename "$STAGE")"
-)
+"$ROOT/scripts/fetch-tor-bundle.sh" "$VENDOR"
+cp "$ROOT/bin/devfix" "$PORTABLE/bin/devfix"
+cp -R "$VENDOR" "$PORTABLE/libexec/devfix/tor"
+cp "$ROOT/man/devfix.1" "$PORTABLE/share/man/man1/devfix.1"
+cp "$ROOT/README.md" "$ROOT/SECURITY.md" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/LICENSE" "$PORTABLE/share/devfix/"
+cp "$ROOT/install.sh" "$ROOT/uninstall.sh" "$PORTABLE/"
+cp "$ROOT/uninstall.sh" "$PORTABLE/share/devfix/uninstall.sh"
+chmod +x "$PORTABLE/bin/devfix" "$PORTABLE/install.sh" "$PORTABLE/uninstall.sh"
 
-if command -v shasum >/dev/null 2>&1; then
-  (cd "$OUT" && shasum -a 256 "DevFix-$VERSION.tar.gz" > SHA256SUMS)
-elif command -v sha256sum >/dev/null 2>&1; then
-  (cd "$OUT" && sha256sum "DevFix-$VERSION.tar.gz" > SHA256SUMS)
-fi
-
-echo "Built $OUT/DevFix-$VERSION.tar.gz"
+tar -czf "$DIST/DevFix-${VERSION}-macos-x86_64.tar.gz" -C "$BUILD/portable" "DevFix-${VERSION}"
+echo "Built $DIST/DevFix-${VERSION}-macos-x86_64.tar.gz"

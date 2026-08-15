@@ -1,19 +1,22 @@
-# Security
+# Security Policy
 
-## Proxy credentials
+DevFix treats network circumvention as a security-sensitive function.
 
-DevFix may store a proxy URL in `~/.config/devfix/config`. If the URL contains credentials, those credentials are therefore stored on disk. The configuration directory and file are created with restrictive permissions (`700` and `600` where supported), and user-facing status commands redact the credential portion.
+## Invariants
 
-Prefer a local proxy endpoint that does not require credentials when possible.
+- TLS certificate verification is never intentionally disabled.
+- DevFix does not install root CAs, modify `/etc/hosts`, disable SIP, or disable Gatekeeper.
+- System-wide proxy, DNS, and firewall settings are not modified.
+- Proxy credentials are redacted from human-readable status/log output.
+- Runtime state and logs are created with restrictive user permissions where possible.
+- DevFix logs command category and failure class, not complete user command arguments.
 
-## Scope
+## Bundled Tor software
 
-DevFix does not install a certificate authority, disable TLS verification, change `/etc/hosts`, alter macOS system proxy settings, or modify global Git proxy configuration.
+Release artifacts embed a pinned official Tor Expert Bundle for macOS x86_64. The build retrieves Tor's published SHA-256 manifest and rejects a bundle whose digest does not match.
 
-## Mirrors
+This checksum verification is performed during release build. Users should also verify DevFix's published `SHA256SUMS` after downloading a release.
 
-DevFix never enables a third-party Homebrew mirror automatically. A configured artifact mirror can supply executable software, so users must choose and trust it explicitly.
+## Reporting
 
-## Reporting vulnerabilities
-
-Please open a GitHub issue without including passwords, proxy credentials, private URLs, tokens, or other secrets. For sensitive reports, use GitHub's private vulnerability reporting if it is enabled for the repository.
+Do not post logs containing personal network information publicly. Security reports should include the smallest reproducible example and should redact credentials, tokens, home-directory names, and private repository URLs.

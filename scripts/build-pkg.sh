@@ -1,38 +1,31 @@
 #!/bin/bash
-set -eu
-
-ROOT=$(cd "$(dirname "$0")/.." && pwd)
+set -euo pipefail
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 VERSION=$(cat "$ROOT/VERSION")
-OUT="${1:-$ROOT/dist}"
-PKGROOT="$ROOT/build/pkgroot"
-PKG="$OUT/DevFix-$VERSION.pkg"
+DIST="$ROOT/dist"
+BUILD="$ROOT/build"
+PKGROOT="$BUILD/pkgroot"
+VENDOR="$BUILD/vendor/tor"
 
-if [ "$(uname -s)" != "Darwin" ]; then
-  echo "Error: .pkg creation requires macOS (pkgbuild)." >&2
-  exit 1
-fi
-command -v pkgbuild >/dev/null 2>&1 || { echo "Error: pkgbuild not found." >&2; exit 1; }
-
+"$ROOT/scripts/build-dist.sh"
 rm -rf "$PKGROOT"
-mkdir -p "$PKGROOT/usr/local/bin" "$PKGROOT/usr/local/share/man/man1" "$OUT"
-install -m 0755 "$ROOT/bin/devfix" "$PKGROOT/usr/local/bin/devfix"
-install -m 0644 "$ROOT/man/devfix.1" "$PKGROOT/usr/local/share/man/man1/devfix.1"
+mkdir -p "$PKGROOT/usr/local/bin" "$PKGROOT/usr/local/libexec/devfix" "$PKGROOT/usr/local/share/man/man1" "$PKGROOT/usr/local/share/devfix"
+cp "$ROOT/bin/devfix" "$PKGROOT/usr/local/bin/devfix"
+cp -R "$VENDOR" "$PKGROOT/usr/local/libexec/devfix/tor"
+cp "$ROOT/man/devfix.1" "$PKGROOT/usr/local/share/man/man1/devfix.1"
+cp "$ROOT/README.md" "$ROOT/SECURITY.md" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/LICENSE" "$ROOT/uninstall.sh" "$PKGROOT/usr/local/share/devfix/"
+chmod +x "$PKGROOT/usr/local/share/devfix/uninstall.sh"
+chmod +x "$PKGROOT/usr/local/bin/devfix" "$PKGROOT/usr/local/libexec/devfix/tor/tor" "$PKGROOT/usr/local/libexec/devfix/tor/pluggable_transports/lyrebird"
 
-pkgbuild \
-  --root "$PKGROOT" \
-  --identifier "io.github.shahbazi-amir.devfix" \
-  --version "$VERSION" \
-  --install-location / \
-  "$PKG"
-
-"$ROOT/scripts/build-dist.sh" "$OUT"
+command -v pkgbuild >/dev/null 2>&1 || { echo "pkgbuild is required; run on macOS" >&2; exit 1; }
+pkgbuild --root "$PKGROOT" --identifier io.github.shahbazi-amir.devfix \
+  --version "$VERSION" --install-location / --ownership recommended \
+  "$DIST/DevFix-${VERSION}-macos-x86_64.pkg"
 
 if command -v shasum >/dev/null 2>&1; then
-  (
-    cd "$OUT"
-    shasum -a 256 "DevFix-$VERSION.pkg" "DevFix-$VERSION.tar.gz" > SHA256SUMS
-  )
+  (cd "$DIST" && shasum -a 256 "DevFix-${VERSION}-macos-x86_64.pkg" "DevFix-${VERSION}-macos-x86_64.tar.gz" > SHA256SUMS)
+else
+  (cd "$DIST" && sha256sum "DevFix-${VERSION}-macos-x86_64.pkg" "DevFix-${VERSION}-macos-x86_64.tar.gz" > SHA256SUMS)
 fi
 
-echo "Built $PKG"
-echo "Note: this package is unsigned unless you sign it separately with an Apple Developer ID Installer certificate."
+echo "Built package and checksums in $DIST"
