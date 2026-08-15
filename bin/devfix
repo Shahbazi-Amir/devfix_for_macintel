@@ -1,0 +1,631 @@
+#!/bin/bash
+# DevFix for Mac Intel
+# A dependency-free network/proxy helper for Homebrew and developer CLI tools.
+
+set -u
+
+DEVFIX_VERSION="1.0.0"
+DEVFIX_NAME="DevFix"
+DEVFIX_CONFIG_DIR="${DEVFIX_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/devfix}"
+DEVFIX_CONFIG="${DEVFIX_CONFIG:-$DEVFIX_CONFIG_DIR/config}"
+
+C_RESET=''
+C_BOLD=''
+C_GREEN=''
+C_YELLOW=''
+C_RED=''
+C_BLUE=''
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET='\033[0m'
+  C_BOLD='\033[1m'
+  C_GREEN='\033[32m'
+  C_YELLOW='\033[33m'
+  C_RED='\033[31m'
+  C_BLUE='\033[34m'
+fi
+
+info() { printf "%b%s%b\n" "$C_BLUE" "$*" "$C_RESET"; }
+ok() { printf "%b%s%b\n" "$C_GREEN" "$*" "$C_RESET"; }
+warn() { printf "%b%s%b\n" "$C_YELLOW" "$*" "$C_RESET" >&2; }
+err() { printf "%b%s%b\n" "$C_RED" "$*" "$C_RESET" >&2; }
+die() { err "Error: $*"; exit 1; }
+usage_error() { err "Error: $*"; printf "Run 'devfix help' for usage.\n" >&2; exit 2; }
+
+ensure_config_dir() {
+  if [ ! -d "$DEVFIX_CONFIG_DIR" ]; then
+    mkdir -p "$DEVFIX_CONFIG_DIR" || die "cannot create config directory: $DEVFIX_CONFIG_DIR"
+    chmod 700 "$DEVFIX_CONFIG_DIR" 2>/dev/null || true
+  fi
+}
+
+cfg_get() {
+  key="$1"
+  default_value="$2"
+  if [ ! -f "$DEVFIX_CONFIG" ]; then
+    printf '%s' "$default_value"
+    return
+  fi
+  value=$(sed -n "s/^${key}=//p" "$DEVFIX_CONFIG" | tail -n 1)
+  if [ -n "$value" ]; then
+    printf '%s' "$value"
+  else
+    printf '%s' "$default_value"
+  fi
+}
+
+load_config() {
+  PROXY_URL=$(cfg_get PROXY_URL "")
+  ENABLED=$(cfg_get ENABLED "0")
+  NO_PROXY_VALUE=$(cfg_get NO_PROXY "localhost,127.0.0.1,::1")
+  CONNECT_TIMEOUT=$(cfg_get CONNECT_TIMEOUT "5")
+  MAX_TIME=$(cfg_get MAX_TIME "15")
+  HOMEBREW_API_DOMAIN_VALUE=$(cfg_get HOMEBREW_API_DOMAIN "")
+  HOMEBREW_ARTIFACT_DOMAIN_VALUE=$(cfg_get HOMEBREW_ARTIFACT_DOMAIN "")
+}
+
+save_config() {
+  ensure_config_dir
+  tmp="$DEVFIX_CONFIG.tmp.$$"
+  umask 077
+  {
+    printf 'PROXY_URL=%s\n' "$PROXY_URL"
+    printf 'ENABLED=%s\n' "$ENABLED"
+    printf 'NO_PROXY=%s\n' "$NO_PROXY_VALUE"
+    printf 'CONNECT_TIMEOUT=%s\n' "$CONNECT_TIMEOUT"
+    printf 'MAX_TIME=%s\n' "$MAX_TIME"
+    printf 'HOMEBREW_API_DOMAIN=%s\n' "$HOMEBREW_API_DOMAIN_VALUE"
+    printf 'HOMEBREW_ARTIFACT_DOMAIN=%s\n' "$HOMEBREW_ARTIFACT_DOMAIN_VALUE"
+  } > "$tmp" || die "cannot write temporary config"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$DEVFIX_CONFIG" || die "cannot replace config"
+}
+
+contains_whitespace() {
+  case "$1" in
+    *' '*|*$'\t'*|*$'\n'*|*$'\r'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_proxy_url() {
+  value="$1"
+  contains_whitespace "$value" && return 1
+  case "$value" in
+    http://*|https://*|socks5://*|socks5h://*) ;;
+    *) return 1 ;;
+  esac
+  hostpart=${value#*://}
+  hostpart=${hostpart#*@}
+  case "$hostpart" in
+    *:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_http_url() {
+  value="$1"
+  contains_whitespace "$value" && return 1
+  case "$value" in
+    http://*|https://*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+redact_proxy() {
+  printf '%s' "$1" | sed -E 's#(://)[^/@]+@#\1***@#'
+}
+
+shell_quote() {
+  printf "'"
+  printf '%s' "$1" | sed "s/'/'\"'\"'/g"
+  printf "'"
+}
+
+apply_runtime_env() {
+  if [ "$ENABLED" = "1" ] && [ -n "$PROXY_URL" ]; then
+    export http_proxy="$PROXY_URL"
+    export https_proxy="$PROXY_URL"
+    export all_proxy="$PROXY_URL"
+    export HTTP_PROXY="$PROXY_URL"
+    export HTTPS_PROXY="$PROXY_URL"
+    export ALL_PROXY="$PROXY_URL"
+    export no_proxy="$NO_PROXY_VALUE"
+    export NO_PROXY="$NO_PROXY_VALUE"
+  fi
+  if [ -n "$HOMEBREW_API_DOMAIN_VALUE" ]; then
+    export HOMEBREW_API_DOMAIN="$HOMEBREW_API_DOMAIN_VALUE"
+  fi
+  if [ -n "$HOMEBREW_ARTIFACT_DOMAIN_VALUE" ]; then
+    export HOMEBREW_ARTIFACT_DOMAIN="$HOMEBREW_ARTIFACT_DOMAIN_VALUE"
+  fi
+}
+
+print_env() {
+  load_config
+  if [ "${1:-}" = "--unset" ]; then
+    cat <<'ENVEOF'
+unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY no_proxy NO_PROXY
+unset HOMEBREW_API_DOMAIN HOMEBREW_ARTIFACT_DOMAIN
+ENVEOF
+    return 0
+  fi
+
+  if [ "$ENABLED" = "1" ]; then
+    [ -n "$PROXY_URL" ] || die "proxy is enabled but no proxy URL is configured"
+    qproxy=$(shell_quote "$PROXY_URL")
+    qno=$(shell_quote "$NO_PROXY_VALUE")
+    printf 'export http_proxy=%s\n' "$qproxy"
+    printf 'export https_proxy=%s\n' "$qproxy"
+    printf 'export all_proxy=%s\n' "$qproxy"
+    printf 'export HTTP_PROXY=%s\n' "$qproxy"
+    printf 'export HTTPS_PROXY=%s\n' "$qproxy"
+    printf 'export ALL_PROXY=%s\n' "$qproxy"
+    printf 'export no_proxy=%s\n' "$qno"
+    printf 'export NO_PROXY=%s\n' "$qno"
+  else
+    printf '# DevFix proxy is disabled\n'
+  fi
+
+  if [ -n "$HOMEBREW_API_DOMAIN_VALUE" ]; then
+    printf 'export HOMEBREW_API_DOMAIN=%s\n' "$(shell_quote "$HOMEBREW_API_DOMAIN_VALUE")"
+  fi
+  if [ -n "$HOMEBREW_ARTIFACT_DOMAIN_VALUE" ]; then
+    printf 'export HOMEBREW_ARTIFACT_DOMAIN=%s\n' "$(shell_quote "$HOMEBREW_ARTIFACT_DOMAIN_VALUE")"
+  fi
+}
+
+cmd_proxy() {
+  action="${1:-status}"
+  load_config
+  case "$action" in
+    set)
+      [ "$#" -eq 2 ] || usage_error "usage: devfix proxy set <proxy-url>"
+      validate_proxy_url "$2" || usage_error "proxy URL must use http://, https://, socks5:// or socks5h:// and include a port"
+      PROXY_URL="$2"
+      ENABLED=1
+      save_config
+      ok "Proxy saved and enabled: $(redact_proxy "$PROXY_URL")"
+      ;;
+    clear)
+      PROXY_URL=""
+      ENABLED=0
+      save_config
+      ok "Proxy configuration cleared."
+      ;;
+    enable|on)
+      [ -n "$PROXY_URL" ] || die "no proxy configured; use: devfix proxy set <proxy-url>"
+      ENABLED=1
+      save_config
+      ok "Proxy enabled for DevFix-managed commands."
+      ;;
+    disable|off)
+      ENABLED=0
+      save_config
+      ok "Proxy disabled for DevFix-managed commands."
+      ;;
+    status)
+      printf 'Config: %s\n' "$DEVFIX_CONFIG"
+      if [ "$ENABLED" = "1" ]; then
+        printf 'Proxy: enabled\n'
+      else
+        printf 'Proxy: disabled\n'
+      fi
+      if [ -n "$PROXY_URL" ]; then
+        printf 'URL: %s\n' "$(redact_proxy "$PROXY_URL")"
+      else
+        printf 'URL: not configured\n'
+      fi
+      printf 'NO_PROXY: %s\n' "$NO_PROXY_VALUE"
+      ;;
+    detect)
+      detect_proxy
+      ;;
+    *) usage_error "unknown proxy action: $action" ;;
+  esac
+}
+
+try_proxy_candidate() {
+  candidate="$1"
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+  code=$(curl -L -sS -o /dev/null -w '%{http_code}' --connect-timeout 3 --max-time 5 --proxy "$candidate" https://github.com/ 2>/dev/null || printf '000')
+  case "$code" in
+    2??|3??|401|403) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+detect_proxy() {
+  info "Looking for an already-running local proxy..."
+  env_proxy="${ALL_PROXY:-${all_proxy:-${HTTPS_PROXY:-${https_proxy:-${HTTP_PROXY:-${http_proxy:-}}}}}}}"
+  if [ -n "$env_proxy" ] && validate_proxy_url "$env_proxy" && try_proxy_candidate "$env_proxy"; then
+    ok "Working proxy found in the current environment: $(redact_proxy "$env_proxy")"
+    printf "Save it with:\n  devfix proxy set '%s'\n" "$(redact_proxy "$env_proxy")"
+    return 0
+  fi
+
+  found=0
+  for port in 1080 7890 7891 8080 10808 2080; do
+    open=1
+    if command -v nc >/dev/null 2>&1; then
+      nc -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1 || open=0
+    fi
+    [ "$open" -eq 1 ] || continue
+
+    for scheme in socks5h http; do
+      candidate="$scheme://127.0.0.1:$port"
+      if try_proxy_candidate "$candidate"; then
+        ok "Working local proxy candidate: $candidate"
+        printf "To use it:\n  devfix proxy set '%s'\n" "$candidate"
+        found=1
+        break 2
+      fi
+    done
+  done
+
+  if [ "$found" -eq 0 ]; then
+    warn "No working local proxy was detected on common ports."
+    printf '%s\n' "DevFix is not a VPN. Start your existing proxy/VPN client, obtain its local HTTP/SOCKS5 address, then run:" \
+      "  devfix proxy set socks5h://127.0.0.1:PORT"
+    return 1
+  fi
+}
+
+cmd_mirror() {
+  action="${1:-status}"
+  load_config
+  case "$action" in
+    set-api)
+      [ "$#" -eq 2 ] || usage_error "usage: devfix mirror set-api <https-url>"
+      validate_http_url "$2" || usage_error "mirror URL must use http:// or https://"
+      HOMEBREW_API_DOMAIN_VALUE="$2"
+      save_config
+      ok "Homebrew API mirror saved."
+      ;;
+    set-artifact)
+      [ "$#" -eq 2 ] || usage_error "usage: devfix mirror set-artifact <https-url>"
+      validate_http_url "$2" || usage_error "mirror URL must use http:// or https://"
+      HOMEBREW_ARTIFACT_DOMAIN_VALUE="$2"
+      save_config
+      warn "Use only a mirror you trust; Homebrew downloads executable software through it."
+      ok "Homebrew artifact mirror saved."
+      ;;
+    clear)
+      HOMEBREW_API_DOMAIN_VALUE=""
+      HOMEBREW_ARTIFACT_DOMAIN_VALUE=""
+      save_config
+      ok "Homebrew mirror overrides cleared."
+      ;;
+    status)
+      printf 'Homebrew API mirror: %s\n' "${HOMEBREW_API_DOMAIN_VALUE:-default}"
+      printf 'Homebrew artifact mirror: %s\n' "${HOMEBREW_ARTIFACT_DOMAIN_VALUE:-default}"
+      ;;
+    *) usage_error "unknown mirror action: $action" ;;
+  esac
+}
+
+run_managed() {
+  [ "$#" -gt 0 ] || usage_error "usage: devfix run <command> [args...]"
+  load_config
+  if [ "$ENABLED" = "1" ] && [ -z "$PROXY_URL" ]; then
+    die "proxy is enabled but no URL is configured"
+  fi
+  apply_runtime_env
+  exec "$@"
+}
+
+run_named_tool() {
+  tool="$1"
+  shift
+  command -v "$tool" >/dev/null 2>&1 || die "$tool is not installed or not in PATH"
+  load_config
+  if [ "$ENABLED" = "1" ] && [ -z "$PROXY_URL" ]; then
+    die "proxy is enabled but no URL is configured"
+  fi
+  apply_runtime_env
+  exec "$tool" "$@"
+}
+
+probe() {
+  mode="$1"
+  label="$2"
+  url="$3"
+  load_config
+
+  if ! command -v curl >/dev/null 2>&1; then
+    printf '  %-22s %s\n' "$label" "NO CURL"
+    PROBE_FAIL=$((PROBE_FAIL + 1))
+    return
+  fi
+
+  proxy_args=""
+  if [ "$mode" = "proxy" ]; then
+    if [ -z "$PROXY_URL" ]; then
+      printf '  %-22s %s\n' "$label" "NO PROXY"
+      PROBE_FAIL=$((PROBE_FAIL + 1))
+      return
+    fi
+    proxy_args="$PROXY_URL"
+  fi
+
+  if [ -n "$proxy_args" ]; then
+    code=$(curl -L -sS -o /dev/null -w '%{http_code}' --connect-timeout "$CONNECT_TIMEOUT" --max-time "$MAX_TIME" --proxy "$proxy_args" "$url" 2>/dev/null || printf '000')
+  else
+    code=$(curl -L -sS -o /dev/null -w '%{http_code}' --connect-timeout "$CONNECT_TIMEOUT" --max-time "$MAX_TIME" --noproxy '*' "$url" 2>/dev/null || printf '000')
+  fi
+
+  case "$code" in
+    2??|3??)
+      printf '  %-22s OK (HTTP %s)\n' "$label" "$code"
+      PROBE_OK=$((PROBE_OK + 1))
+      ;;
+    401)
+      if [ "$label" = "Homebrew bottles" ]; then
+        printf '  %-22s REACHABLE (HTTP 401 expected)\n' "$label"
+        PROBE_OK=$((PROBE_OK + 1))
+      else
+        printf '  %-22s REACHABLE (HTTP 401)\n' "$label"
+        PROBE_WARN=$((PROBE_WARN + 1))
+      fi
+      ;;
+    403)
+      printf '  %-22s REACHABLE/DENIED (HTTP 403)\n' "$label"
+      PROBE_WARN=$((PROBE_WARN + 1))
+      ;;
+    000*|000)
+      printf '  %-22s FAIL (timeout/DNS/TLS/connect)\n' "$label"
+      PROBE_FAIL=$((PROBE_FAIL + 1))
+      ;;
+    *)
+      printf '  %-22s REACHABLE (HTTP %s)\n' "$label" "$code"
+      PROBE_WARN=$((PROBE_WARN + 1))
+      ;;
+  esac
+}
+
+os_major_version() {
+  value="$1"
+  printf '%s' "$value" | awk -F. '{print $1}'
+}
+
+cmd_doctor() {
+  offline=0
+  if [ "${1:-}" = "--offline" ]; then
+    offline=1
+  elif [ -n "${1:-}" ]; then
+    usage_error "usage: devfix doctor [--offline]"
+  fi
+
+  load_config
+  printf '%b%s %s%b\n' "$C_BOLD" "$DEVFIX_NAME" "$DEVFIX_VERSION" "$C_RESET"
+  printf '%s\n' "System"
+
+  os_name=$(uname -s 2>/dev/null || printf unknown)
+  arch=$(uname -m 2>/dev/null || printf unknown)
+  printf '  %-22s %s\n' "OS" "$os_name"
+  printf '  %-22s %s\n' "Architecture" "$arch"
+
+  if [ "$os_name" = "Darwin" ]; then
+    mac_version=$(sw_vers -productVersion 2>/dev/null || printf unknown)
+    model=$(sysctl -n hw.model 2>/dev/null || printf unknown)
+    printf '  %-22s %s\n' "macOS" "$mac_version"
+    printf '  %-22s %s\n' "Mac model" "$model"
+    if [ "$arch" != "x86_64" ]; then
+      warn "  Note: DevFix is optimized for Intel Macs; this machine reports $arch."
+    fi
+    major=$(os_major_version "$mac_version")
+    case "$major" in
+      ''|*[!0-9]*) ;;
+      *)
+        if [ "$major" -le 13 ]; then
+          warn "  Homebrew note: this is a legacy macOS generation; modern bottle/formula availability may be limited."
+        fi
+        ;;
+    esac
+    if command -v xcode-select >/dev/null 2>&1 && xcode-select -p >/dev/null 2>&1; then
+      printf '  %-22s %s\n' "Command Line Tools" "installed"
+    else
+      printf '  %-22s %s\n' "Command Line Tools" "missing/unavailable"
+    fi
+  else
+    warn "  Note: DevFix targets macOS; diagnostics are running on a non-macOS host."
+  fi
+
+  printf '\n%s\n' "Developer tools"
+  if command -v curl >/dev/null 2>&1; then
+    printf '  %-22s %s\n' "curl" "$(command -v curl)"
+  else
+    printf '  %-22s %s\n' "curl" "missing"
+  fi
+  if command -v git >/dev/null 2>&1; then
+    printf '  %-22s %s\n' "git" "$(git --version 2>/dev/null || printf installed)"
+  else
+    printf '  %-22s %s\n' "git" "missing"
+  fi
+  if command -v brew >/dev/null 2>&1; then
+    brew_version=$(brew --version 2>/dev/null | head -n 1)
+    brew_prefix=$(brew --prefix 2>/dev/null || printf unknown)
+    printf '  %-22s %s\n' "Homebrew" "${brew_version:-installed}"
+    printf '  %-22s %s\n' "Homebrew prefix" "$brew_prefix"
+  else
+    printf '  %-22s %s\n' "Homebrew" "not found"
+  fi
+
+  printf '\n%s\n' "DevFix configuration"
+  if [ "$ENABLED" = "1" ]; then
+    printf '  %-22s %s\n' "Proxy mode" "enabled"
+  else
+    printf '  %-22s %s\n' "Proxy mode" "disabled"
+  fi
+  if [ -n "$PROXY_URL" ]; then
+    printf '  %-22s %s\n' "Proxy URL" "$(redact_proxy "$PROXY_URL")"
+  else
+    printf '  %-22s %s\n' "Proxy URL" "not configured"
+  fi
+  printf '  %-22s %s\n' "API mirror" "${HOMEBREW_API_DOMAIN_VALUE:-default}"
+  printf '  %-22s %s\n' "Artifact mirror" "${HOMEBREW_ARTIFACT_DOMAIN_VALUE:-default}"
+
+  if [ "$offline" -eq 1 ]; then
+    printf '\nNetwork checks skipped (--offline).\n'
+    return 0
+  fi
+
+  printf '\n%s\n' "Direct network"
+  PROBE_OK=0
+  PROBE_WARN=0
+  PROBE_FAIL=0
+  probe direct "GitHub" "https://github.com/"
+  probe direct "GitHub API" "https://api.github.com/"
+  probe direct "Homebrew API" "https://formulae.brew.sh/api/formula.jws.json"
+  probe direct "Homebrew bottles" "https://ghcr.io/v2/"
+  direct_ok=$PROBE_OK
+  direct_warn=$PROBE_WARN
+  direct_fail=$PROBE_FAIL
+
+  proxy_ok=0
+  proxy_warn=0
+  proxy_fail=0
+  if [ -n "$PROXY_URL" ]; then
+    printf '\n%s\n' "Proxy network"
+    PROBE_OK=0
+    PROBE_WARN=0
+    PROBE_FAIL=0
+    probe proxy "GitHub" "https://github.com/"
+    probe proxy "GitHub API" "https://api.github.com/"
+    probe proxy "Homebrew API" "https://formulae.brew.sh/api/formula.jws.json"
+    probe proxy "Homebrew bottles" "https://ghcr.io/v2/"
+    proxy_ok=$PROBE_OK
+    proxy_warn=$PROBE_WARN
+    proxy_fail=$PROBE_FAIL
+  fi
+
+  printf '\n%s\n' "Assessment"
+  if [ "$direct_fail" -gt 0 ] && [ "$proxy_ok" -gt "$direct_ok" ]; then
+    ok "  Proxy path is materially healthier than the direct path. Network filtering/routing is likely part of the problem."
+  elif [ "$direct_fail" -eq 0 ]; then
+    ok "  Tested Homebrew/GitHub endpoints are reachable directly. A failing install may be compatibility, package, certificate, or toolchain related."
+  elif [ -n "$PROXY_URL" ] && [ "$proxy_fail" -gt 0 ]; then
+    warn "  Direct and proxy paths both have failures. Check the upstream proxy/VPN, DNS, TLS certificates, or service availability."
+  else
+    warn "  Direct path has failures. Configure a working HTTP/SOCKS5 proxy and run doctor again."
+  fi
+
+  if [ "$direct_warn" -gt 0 ] || [ "$proxy_warn" -gt 0 ]; then
+    warn "  One or more endpoints were reachable but returned an HTTP denial/error; transport works, but service policy/authentication may still block the request."
+  fi
+}
+
+cmd_test_url() {
+  mode="direct"
+  if [ "${1:-}" = "--proxy" ]; then
+    mode="proxy"
+    shift
+  elif [ "${1:-}" = "--direct" ]; then
+    shift
+  fi
+  [ "$#" -eq 1 ] || usage_error "usage: devfix test-url [--direct|--proxy] <url>"
+  validate_http_url "$1" || usage_error "URL must use http:// or https://"
+  PROBE_OK=0
+  PROBE_WARN=0
+  PROBE_FAIL=0
+  probe "$mode" "Target" "$1"
+  [ "$PROBE_FAIL" -eq 0 ]
+}
+
+cmd_config() {
+  action="${1:-show}"
+  load_config
+  case "$action" in
+    show)
+      printf 'Config file: %s\n' "$DEVFIX_CONFIG"
+      printf 'Proxy enabled: %s\n' "$ENABLED"
+      printf 'Proxy URL: %s\n' "$(if [ -n "$PROXY_URL" ]; then redact_proxy "$PROXY_URL"; else printf 'not configured'; fi)"
+      printf 'NO_PROXY: %s\n' "$NO_PROXY_VALUE"
+      printf 'Connect timeout: %ss\n' "$CONNECT_TIMEOUT"
+      printf 'Max request time: %ss\n' "$MAX_TIME"
+      printf 'Homebrew API mirror: %s\n' "${HOMEBREW_API_DOMAIN_VALUE:-default}"
+      printf 'Homebrew artifact mirror: %s\n' "${HOMEBREW_ARTIFACT_DOMAIN_VALUE:-default}"
+      ;;
+    path) printf '%s\n' "$DEVFIX_CONFIG" ;;
+    *) usage_error "unknown config action: $action" ;;
+  esac
+}
+
+print_help() {
+  cat <<'HELPEOF'
+DevFix for Mac Intel — Homebrew and developer-network helper
+
+DevFix is NOT a VPN. It safely applies an existing HTTP/SOCKS5 proxy to
+Homebrew, git, curl, and arbitrary developer commands, while diagnosing
+whether failures are caused by connectivity or by local compatibility.
+
+Usage:
+  devfix doctor [--offline]              Diagnose macOS, Homebrew and network paths
+  devfix proxy set <url>                 Save and enable a proxy
+  devfix proxy detect                    Look for an already-running local proxy
+  devfix proxy status                    Show proxy status (credentials redacted)
+  devfix proxy enable|disable            Toggle proxy use by DevFix-managed commands
+  devfix proxy clear                     Remove the saved proxy
+  devfix on | off                        Short aliases for proxy enable/disable
+
+  devfix run <command> [args...]         Run any command with DevFix networking
+  devfix brew [args...]                  Run Homebrew with DevFix networking
+  devfix git [args...]                   Run git with DevFix networking
+  devfix curl [args...]                  Run curl with DevFix networking
+
+  devfix env                             Print shell exports for: eval "$(devfix env)"
+  devfix env --unset                     Print shell commands that clear DevFix variables
+  devfix test-url [--proxy] <url>        Test one endpoint
+
+  devfix mirror set-api <url>            Set HOMEBREW_API_DOMAIN
+  devfix mirror set-artifact <url>       Set HOMEBREW_ARTIFACT_DOMAIN
+  devfix mirror status                   Show Homebrew mirror overrides
+  devfix mirror clear                    Clear mirror overrides
+
+  devfix config show|path                Show safe configuration or its path
+  devfix version                         Print version
+  devfix help                            Show this help
+
+Examples:
+  devfix proxy detect
+  devfix proxy set socks5h://127.0.0.1:7890
+  devfix doctor
+  devfix brew update
+  devfix brew install ffmpeg
+  devfix run ruby --version
+  eval "$(devfix env)"                   # apply to the current shell
+  eval "$(devfix env --unset)"           # remove from the current shell
+
+Notes:
+  * 'devfix on' affects commands launched through DevFix. A child process cannot
+    modify the environment of your already-running shell; use 'devfix env' for that.
+  * Proxy credentials are stored locally only when you put them in the saved URL.
+    The config file is created with mode 600 and status output redacts credentials.
+HELPEOF
+}
+
+main() {
+  command_name="${1:-help}"
+  if [ "$#" -gt 0 ]; then shift; fi
+
+  case "$command_name" in
+    help|-h|--help) print_help ;;
+    version|-V|--version) printf '%s\n' "$DEVFIX_VERSION" ;;
+    doctor|diagnose) cmd_doctor "$@" ;;
+    proxy) cmd_proxy "$@" ;;
+    on) cmd_proxy enable ;;
+    off) cmd_proxy disable ;;
+    mirror) cmd_mirror "$@" ;;
+    env) print_env "$@" ;;
+    run) run_managed "$@" ;;
+    brew) run_named_tool brew "$@" ;;
+    git) run_named_tool git "$@" ;;
+    curl) run_named_tool curl "$@" ;;
+    test-url) cmd_test_url "$@" ;;
+    config) cmd_config "$@" ;;
+    *) usage_error "unknown command: $command_name" ;;
+  esac
+}
+
+main "$@"
