@@ -15,18 +15,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Test before packaging
-        run: ./tests/test_devfix.sh
-      - name: Build package
+        run: |
+          bash tests/test_devfix.sh
+          bash tests/test_install.sh
+      - name: Build self-contained package
         run: ./scripts/build-pkg.sh
+      - name: Validate package payload
+        run: |
+          pkgutil --payload-files dist/DevFix-2.0.0-macos-x86_64.pkg | grep -F 'usr/local/bin/devfix'
+          pkgutil --payload-files dist/DevFix-2.0.0-macos-x86_64.pkg | grep -F 'usr/local/libexec/devfix/tor/tor'
+          pkgutil --payload-files dist/DevFix-2.0.0-macos-x86_64.pkg | grep -F 'usr/local/libexec/devfix/tor/pluggable_transports/lyrebird'
+          tar -tzf dist/DevFix-2.0.0-macos-x86_64.tar.gz | grep -F 'libexec/devfix/tor/tor'
+      - name: Portable artifact smoke test
+        run: |
+          tmp=$(mktemp -d)
+          tar -xzf dist/DevFix-2.0.0-macos-x86_64.tar.gz -C "$tmp"
+          "$tmp/DevFix-2.0.0/bin/devfix" --version
+          test -x "$tmp/DevFix-2.0.0/libexec/devfix/tor/tor"
+          test -x "$tmp/DevFix-2.0.0/libexec/devfix/tor/pluggable_transports/lyrebird"
       - name: Show checksums
         run: cat dist/SHA256SUMS
-      - name: Upload installer artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: DevFix-${{ github.sha }}
           path: |
-            dist/DevFix-*.pkg
-            dist/DevFix-*.tar.gz
+            dist/DevFix-2.0.0-macos-x86_64.pkg
+            dist/DevFix-2.0.0-macos-x86_64.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
-          retention-days: 30
