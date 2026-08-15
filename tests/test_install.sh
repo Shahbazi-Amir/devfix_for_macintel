@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/devfix-install.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT INT TERM
 PORTABLE="$TMP/portable"
@@ -18,7 +18,7 @@ DESTDIR="$DEST" PREFIX=/usr/local "$PORTABLE/install.sh" >/dev/null
 [ -x "$DEST/usr/local/bin/devfix" ]
 [ -x "$DEST/usr/local/libexec/devfix/tor/tor" ]
 [ -x "$DEST/usr/local/libexec/devfix/tor/pluggable_transports/lyrebird" ]
-[ "$($DEST/usr/local/bin/devfix --version)" = "DevFix 2.0.0" ]
+[ "$("$DEST/usr/local/bin/devfix" --version)" = "DevFix 2.0.0" ]
 DESTDIR="$DEST" PREFIX=/usr/local "$DEST/usr/local/share/devfix/uninstall.sh" >/dev/null
 [ ! -e "$DEST/usr/local/bin/devfix" ]
 echo "install/uninstall smoke test passed"

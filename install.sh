@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ROOT=$(cd -- "$(dirname -- "$0")" && pwd)
 PREFIX=${PREFIX:-/usr/local}
 DESTDIR=${DESTDIR:-}
 TARGET="$DESTDIR$PREFIX"

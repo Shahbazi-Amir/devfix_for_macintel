@@ -1,6 +1,6 @@
 #!/bin/bash
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 DEVFIX="$ROOT/bin/devfix"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/devfix-tests.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT INT TERM
@@ -9,8 +9,14 @@ PASS=0
 FAIL=0
 pass() { PASS=$((PASS + 1)); printf 'ok - %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf 'not ok - %s\n' "$1" >&2; }
-assert_eq() { name="$1"; expected="$2"; actual="$3"; [ "$expected" = "$actual" ] && pass "$name" || { fail "$name (expected=$expected actual=$actual)"; return 1; }; }
-assert_contains() { name="$1"; needle="$2"; hay="$3"; printf '%s' "$hay" | grep -Fq "$needle" && pass "$name" || { fail "$name (missing $needle)"; return 1; }; }
+assert_eq() {
+  name="$1"; expected="$2"; actual="$3"
+  if [ "$expected" = "$actual" ]; then pass "$name"; else fail "$name (expected=$expected actual=$actual)"; return 1; fi
+}
+assert_contains() {
+  name="$1"; needle="$2"; hay="$3"
+  if printf '%s' "$hay" | grep -Fq "$needle"; then pass "$name"; else fail "$name (missing $needle)"; return 1; fi
+}
 
 export HOME="$TMP/home"
 export DEVFIX_STATE_DIR="$TMP/state"

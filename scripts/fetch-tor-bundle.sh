@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 VERSION=$(cat "$ROOT/TOR_BUNDLE_VERSION")
 DEST=${1:-"$ROOT/build/vendor/tor"}
 ARCHIVE="tor-expert-bundle-macos-x86_64-${VERSION}.tar.gz"
@@ -38,7 +38,10 @@ actual=$(sha256_file "$TMP/$ARCHIVE")
 tar -xzf "$TMP/$ARCHIVE" -C "$TMP"
 source_dir="$TMP/tor"
 [ -d "$source_dir" ] || source_dir=$(find "$TMP" -type d -name tor | head -n 1)
-[ -n "$source_dir" ] && [ -d "$source_dir" ] || { echo "Tor bundle layout not recognized" >&2; exit 1; }
+if [ -z "$source_dir" ] || [ ! -d "$source_dir" ]; then
+  echo "Tor bundle layout not recognized" >&2
+  exit 1
+fi
 [ -x "$source_dir/tor" ] || { echo "Tor binary missing from expert bundle" >&2; exit 1; }
 [ -x "$source_dir/pluggable_transports/lyrebird" ] || { echo "lyrebird missing from expert bundle" >&2; exit 1; }
 

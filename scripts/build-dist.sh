@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 VERSION=$(cat "$ROOT/VERSION")
 DIST="$ROOT/dist"
 BUILD="$ROOT/build"
