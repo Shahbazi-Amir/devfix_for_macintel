@@ -22,24 +22,42 @@ jobs:
         run: ./scripts/build-pkg.sh
       - name: Validate package payload
         run: |
-          pkgutil --payload-files dist/DevFix-2.0.0-macos-x86_64.pkg | grep -F 'usr/local/bin/devfix'
-          pkgutil --payload-files dist/DevFix-2.0.0-macos-x86_64.pkg | grep -F 'usr/local/libexec/devfix/tor/tor'
-          pkgutil --payload-files dist/DevFix-2.0.0-macos-x86_64.pkg | grep -F 'usr/local/libexec/devfix/tor/pluggable_transports/lyrebird'
-          tar -tzf dist/DevFix-2.0.0-macos-x86_64.tar.gz | grep -F 'libexec/devfix/tor/tor'
+          version=$(cat VERSION)
+          pkg="dist/DevFix-${version}-macos-x86_64.pkg"
+          archive="dist/DevFix-${version}-macos-x86_64.tar.gz"
+          pkgutil --payload-files "$pkg" | grep -F 'usr/local/bin/devfix'
+          pkgutil --payload-files "$pkg" | grep -F 'usr/local/libexec/devfix/tor/tor'
+          pkgutil --payload-files "$pkg" | grep -F 'usr/local/libexec/devfix/tor/pluggable_transports/lyrebird'
+          tar -tzf "$archive" | grep -F 'libexec/devfix/tor/tor'
+      - name: Real pkg install smoke test
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          pkg="dist/DevFix-${version}-macos-x86_64.pkg"
+          sudo rm -rf /usr/local/libexec/devfix /usr/local/share/devfix
+          sudo rm -f /usr/local/bin/devfix /usr/local/share/man/man1/devfix.1
+          sudo installer -pkg "$pkg" -target /
+          test -x /usr/local/bin/devfix
+          test -x /usr/local/libexec/devfix/tor/tor
+          test -x /usr/local/libexec/devfix/tor/pluggable_transports/lyrebird
+          /usr/local/bin/devfix --version | grep -F "DevFix ${version}"
+          /usr/local/bin/devfix transport list | grep -E 'snowflake.*available'
+          sudo /usr/local/share/devfix/uninstall.sh
       - name: Portable artifact smoke test
         run: |
+          version=$(cat VERSION)
           tmp=$(mktemp -d)
-          tar -xzf dist/DevFix-2.0.0-macos-x86_64.tar.gz -C "$tmp"
-          "$tmp/DevFix-2.0.0/bin/devfix" --version
-          test -x "$tmp/DevFix-2.0.0/libexec/devfix/tor/tor"
-          test -x "$tmp/DevFix-2.0.0/libexec/devfix/tor/pluggable_transports/lyrebird"
+          tar -xzf "dist/DevFix-${version}-macos-x86_64.tar.gz" -C "$tmp"
+          "$tmp/DevFix-${version}/bin/devfix" --version
+          test -x "$tmp/DevFix-${version}/libexec/devfix/tor/tor"
+          test -x "$tmp/DevFix-${version}/libexec/devfix/tor/pluggable_transports/lyrebird"
       - name: Show checksums
         run: cat dist/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
           name: DevFix-${{ github.sha }}
           path: |
-            dist/DevFix-2.0.0-macos-x86_64.pkg
-            dist/DevFix-2.0.0-macos-x86_64.tar.gz
+            dist/DevFix-*-macos-x86_64.pkg
+            dist/DevFix-*-macos-x86_64.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
