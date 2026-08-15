@@ -52,7 +52,7 @@ export DEVFIX_TOR_BIN="$TMP/libexec/tor/tor"
 export DEVFIX_LYREBIRD_BIN="$TMP/libexec/tor/pluggable_transports/lyrebird"
 
 out=$("$DEVFIX" --version)
-assert_eq "version" "DevFix 2.0.0" "$out"
+assert_eq "version" "DevFix $(cat "$ROOT/VERSION")" "$out"
 
 out=$("$DEVFIX" transport list)
 assert_contains "snowflake listed" "snowflake" "$out"
