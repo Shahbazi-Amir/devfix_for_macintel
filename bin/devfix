@@ -373,7 +373,7 @@ probe() {
       printf '  %-22s REACHABLE/DENIED (HTTP 403)\n' "$label"
       PROBE_WARN=$((PROBE_WARN + 1))
       ;;
-    000*|000)
+    000*)
       printf '  %-22s FAIL (timeout/DNS/TLS/connect)\n' "$label"
       PROBE_FAIL=$((PROBE_FAIL + 1))
       ;;
