@@ -40,7 +40,26 @@ jobs:
           test -x /usr/local/bin/devfix
           test -x /usr/local/libexec/devfix/tor/tor
           test -x /usr/local/libexec/devfix/tor/pluggable_transports/lyrebird
+          test "$(stat -f '%Lp' /usr/local/libexec/devfix/tor)" = "755"
           /usr/local/bin/devfix --version | grep -F "DevFix ${version}"
+          /usr/local/bin/devfix transport list | grep -E 'snowflake.*available'
+          sudo /usr/local/share/devfix/uninstall.sh
+      - name: Upgrade repairs legacy payload permissions
+        run: |
+          set -euo pipefail
+          version=$(cat VERSION)
+          pkg="dist/DevFix-${version}-macos-x86_64.pkg"
+          sudo rm -rf /usr/local/libexec/devfix /usr/local/share/devfix
+          sudo rm -f /usr/local/bin/devfix /usr/local/share/man/man1/devfix.1
+          sudo mkdir -p /usr/local/libexec/devfix/tor/pluggable_transports
+          sudo touch /usr/local/libexec/devfix/tor/legacy-marker
+          sudo chmod 700 /usr/local/libexec/devfix/tor
+          sudo chmod 700 /usr/local/libexec/devfix/tor/pluggable_transports
+          sudo installer -pkg "$pkg" -target /
+          test -x /usr/local/bin/devfix
+          test -x /usr/local/libexec/devfix/tor/tor
+          test -x /usr/local/libexec/devfix/tor/pluggable_transports/lyrebird
+          test "$(stat -f '%Lp' /usr/local/libexec/devfix/tor)" = "755"
           /usr/local/bin/devfix transport list | grep -E 'snowflake.*available'
           sudo /usr/local/share/devfix/uninstall.sh
       - name: Portable artifact smoke test
