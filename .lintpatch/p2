@@ -1,0 +1,59 @@
+github' a/scripts/build-pkg.sh b/scripts/build-pkg.sh
+--- a/scripts/build-pkg.sh	2026-08-15 16:23:22.000000000 +0000
++++ b/scripts/build-pkg.sh	2026-08-15 16:34:59.087604711 +0000
+@@ -1,6 +1,6 @@
+ #!/bin/bash
+ set -euo pipefail
+-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
++ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
+ VERSION=$(cat "$ROOT/VERSION")
+ DIST="$ROOT/dist"
+ BUILD="$ROOT/build"
+diff -ruN '--exclude=.git' '--exclude=.github' a/scripts/fetch-tor-bundle.sh b/scripts/fetch-tor-bundle.sh
+--- a/scripts/fetch-tor-bundle.sh	2026-08-15 16:25:30.000000000 +0000
++++ b/scripts/fetch-tor-bundle.sh	2026-08-15 16:34:59.088172608 +0000
+@@ -1,7 +1,7 @@
+ #!/bin/bash
+ set -euo pipefail
+ 
+-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
++ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
+ VERSION=$(cat "$ROOT/TOR_BUNDLE_VERSION")
+ DEST=${1:-"$ROOT/build/vendor/tor"}
+ ARCHIVE="tor-expert-bundle-macos-x86_64-${VERSION}.tar.gz"
+@@ -38,7 +38,10 @@
+ tar -xzf "$TMP/$ARCHIVE" -C "$TMP"
+ source_dir="$TMP/tor"
+ [ -d "$source_dir" ] || source_dir=$(find "$TMP" -type d -name tor | head -n 1)
+-[ -n "$source_dir" ] && [ -d "$source_dir" ] || { echo "Tor bundle layout not recognized" >&2; exit 1; }
++if [ -z "$source_dir" ] || [ ! -d "$source_dir" ]; then
++  echo "Tor bundle layout not recognized" >&2
++  exit 1
++fi
+ [ -x "$source_dir/tor" ] || { echo "Tor binary missing from expert bundle" >&2; exit 1; }
+ [ -x "$source_dir/pluggable_transports/lyrebird" ] || { echo "lyrebird missing from expert bundle" >&2; exit 1; }
+ 
+diff -ruN '--exclude=.git' '--exclude=.github' a/tests/test_devfix.sh b/tests/test_devfix.sh
+--- a/tests/test_devfix.sh	2026-08-15 16:25:30.000000000 +0000
++++ b/tests/test_devfix.sh	2026-08-15 16:34:59.088210066 +0000
+@@ -1,6 +1,6 @@
+ #!/bin/bash
+ set -u
+-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
++ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
+ DEVFIX="$ROOT/bin/devfix"
+ TMP=$(mktemp -d "${TMPDIR:-/tmp}/devfix-tests.XXXXXX")
+ trap 'rm -rf "$TMP"' EXIT INT TERM
+@@ -9,8 +9,14 @@
+ FAIL=0
+ pass() { PASS=$((PASS + 1)); printf 'ok - %s\n' "$1"; }
+ fail() { FAIL=$((FAIL + 1)); printf 'not ok - %s\n' "$1" >&2; }
+-assert_eq() { name="$1"; expected="$2"; actual="$3"; [ "$expected" = "$actual" ] && pass "$name" || { fail "$name (expected=$expected actual=$actual)"; return 1; }; }
+-assert_contains() { name="$1"; needle="$2"; hay="$3"; printf '%s' "$hay" | grep -Fq "$needle" && pass "$name" || { fail "$name (missing $needle)"; return 1; }; }
++assert_eq() {
++  name="$1"; expected="$2"; actual="$3"
++  if [ "$expected" = "$actual" ]; then pass "$name"; else fail "$name (expected=$expected actual=$actual)"; return 1; fi
++}
++assert_contains() {
++  name="$1"; needle="$2"; hay="$3"
++  if printf '%s' "$hay" | grep -Fq "$needle"; then pass "$name"; else fail "$nam
