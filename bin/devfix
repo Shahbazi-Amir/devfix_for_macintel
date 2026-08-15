@@ -4,7 +4,7 @@
 
 set -u
 
-DEVFIX_VERSION="2.0.2"
+DEVFIX_VERSION="2.0.3"
 DEVFIX_NAME="DevFix"
 DEVFIX_LIBEXEC_DIR="${DEVFIX_LIBEXEC_DIR:-/usr/local/libexec/devfix}"
 DEVFIX_TOR_BIN="${DEVFIX_TOR_BIN:-$DEVFIX_LIBEXEC_DIR/tor/tor}"
@@ -304,14 +304,16 @@ write_torrc() {
   port="$1"
   ensure_dirs
   q_data=$(torrc_quote "$DEVFIX_TOR_DATA_DIR")
-  q_pt=$(torrc_quote "$DEVFIX_LYREBIRD_BIN")
+  case "$DEVFIX_LYREBIRD_BIN" in
+    *' '*|*$'\t'*|*$'\n'*|*$'\r'*) die "lyrebird executable path contains whitespace; install DevFix under /usr/local" ;;
+  esac
   cat > "$DEVFIX_TORRC" <<EOF_TORRC
 DataDirectory $q_data
 SocksPort 127.0.0.1:$port
 ClientOnly 1
 AvoidDiskWrites 1
 UseBridges 1
-ClientTransportPlugin snowflake exec $q_pt
+ClientTransportPlugin snowflake exec $DEVFIX_LYREBIRD_BIN
 Bridge $SNOWFLAKE_BRIDGE
 Log notice stdout
 EOF_TORRC
@@ -376,6 +378,16 @@ start_snowflake() {
       tail -n 30 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
       clear_state
       warn "TRANSPORT_FAILURE: Snowflake/Tor exited before bootstrap completed."
+      return 1
+    fi
+
+    pt_failures=$(grep -c 'Managed proxy .*terminated with status code [1-9]' "$DEVFIX_TOR_LOG" 2>/dev/null || true)
+    case "$pt_failures" in ''|*[!0-9]*) pt_failures=0 ;; esac
+    if [ "$pt_failures" -ge 5 ]; then
+      stop_tor_pid "$pid"
+      clear_state
+      tail -n 30 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
+      warn "PLUGGABLE_TRANSPORT_FAILURE: lyrebird repeatedly exited before Snowflake could bootstrap."
       return 1
     fi
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.3 - 2026-08-15
+
+- Fixed Tor managed-transport launch on Intel Monterey by removing a literal quote wrapper around the bundled lyrebird executable path.
+- Added regression coverage for the exact `ClientTransportPlugin snowflake exec /usr/local/.../lyrebird` torrc form used by Tor Project documentation.
+- Added fast failure classification when lyrebird repeatedly exits before Snowflake bootstrap, avoiding a long generic stall timeout for launch/configuration failures.
+
 ## 2.0.2 - 2026-08-15
 
 - Fixed upgrades that could leave the bundled Tor directory root-only and make Snowflake look uninstalled.

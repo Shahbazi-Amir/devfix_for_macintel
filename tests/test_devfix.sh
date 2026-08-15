@@ -80,11 +80,42 @@ export DEVFIX_TEST_MODE=1
 "$DEVFIX" connect snowflake >/dev/null
 if grep -Fq 'Log notice stdout' "$DEVFIX_STATE_DIR/run/torrc"; then pass "tor logs to stdout"; else fail "tor logs to stdout"; fi
 if grep -Fq 'Log notice file' "$DEVFIX_STATE_DIR/run/torrc"; then fail "tor avoids direct log file"; else pass "tor avoids direct log file"; fi
+expected_pt="ClientTransportPlugin snowflake exec $DEVFIX_LYREBIRD_BIN"
+if grep -Fxq "$expected_pt" "$DEVFIX_STATE_DIR/run/torrc"; then pass "lyrebird path is unquoted for Tor managed transport"; else fail "lyrebird path is unquoted for Tor managed transport"; fi
+if grep -Fq 'ClientTransportPlugin snowflake exec "' "$DEVFIX_STATE_DIR/run/torrc"; then fail "lyrebird path has no literal quote wrapper"; else pass "lyrebird path has no literal quote wrapper"; fi
 out=$("$DEVFIX" status)
 assert_contains "snowflake connected" "Transport: snowflake" "$out"
 assert_contains "snowflake socks" "Local SOCKS: 127.0.0.1:" "$out"
 "$DEVFIX" disconnect >/dev/null
 if [ ! -f "$DEVFIX_STATE_DIR/run/state" ]; then pass "disconnect clears state"; else fail "disconnect clears state"; fi
+
+# Repeated managed-transport crashes should fail fast with a specific diagnosis.
+cat > "$TMP/libexec/tor/tor" <<'SH'
+#!/bin/bash
+i=0
+while [ "$i" -lt 5 ]; do
+  echo 'Managed proxy "/tmp/lyrebird" having PID 123 terminated with status code 1'
+  i=$((i + 1))
+done
+sleep 30
+SH
+chmod +x "$TMP/libexec/tor/tor"
+unset DEVFIX_TEST_MODE
+export DEVFIX_BOOTSTRAP_TIMEOUT=30
+export DEVFIX_BOOTSTRAP_STALL_TIMEOUT=30
+set +e
+pt_err=$("$DEVFIX" connect snowflake 2>&1 >/dev/null)
+pt_rc=$?
+set -e
+if [ "$pt_rc" -ne 0 ]; then pass "managed transport crash returns failure"; else fail "managed transport crash returns failure"; fi
+assert_contains "managed transport crash classified" "PLUGGABLE_TRANSPORT_FAILURE" "$pt_err"
+cat > "$TMP/libexec/tor/tor" <<'SH'
+#!/bin/bash
+exec sleep 300
+SH
+chmod +x "$TMP/libexec/tor/tor"
+export DEVFIX_TEST_MODE=1
+unset DEVFIX_BOOTSTRAP_TIMEOUT DEVFIX_BOOTSTRAP_STALL_TIMEOUT
 
 # Auto mode falls back to Snowflake when direct is blocked.
 FAKE_CURL_MODE=blocked "$DEVFIX" config set-transport auto >/dev/null
