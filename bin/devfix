@@ -4,12 +4,13 @@
 
 set -u
 
-DEVFIX_VERSION="2.0.1"
+DEVFIX_VERSION="2.0.2"
 DEVFIX_NAME="DevFix"
 DEVFIX_LIBEXEC_DIR="${DEVFIX_LIBEXEC_DIR:-/usr/local/libexec/devfix}"
 DEVFIX_TOR_BIN="${DEVFIX_TOR_BIN:-$DEVFIX_LIBEXEC_DIR/tor/tor}"
 DEVFIX_LYREBIRD_BIN="${DEVFIX_LYREBIRD_BIN:-$DEVFIX_LIBEXEC_DIR/tor/pluggable_transports/lyrebird}"
-DEVFIX_BOOTSTRAP_TIMEOUT="${DEVFIX_BOOTSTRAP_TIMEOUT:-75}"
+DEVFIX_BOOTSTRAP_TIMEOUT="${DEVFIX_BOOTSTRAP_TIMEOUT:-600}"
+DEVFIX_BOOTSTRAP_STALL_TIMEOUT="${DEVFIX_BOOTSTRAP_STALL_TIMEOUT:-180}"
 DEVFIX_TEST_MODE="${DEVFIX_TEST_MODE:-0}"
 
 if [ "$(uname -s 2>/dev/null || printf unknown)" = "Darwin" ]; then
@@ -180,6 +181,18 @@ snowflake_available() {
   [ -x "$DEVFIX_TOR_BIN" ] && [ -x "$DEVFIX_LYREBIRD_BIN" ]
 }
 
+snowflake_payload_state() {
+  if snowflake_available; then
+    printf 'available'
+  elif [ -d "$DEVFIX_LIBEXEC_DIR/tor" ] && [ ! -x "$DEVFIX_LIBEXEC_DIR/tor" ]; then
+    printf 'inaccessible'
+  elif [ -d "$DEVFIX_LIBEXEC_DIR/tor" ]; then
+    printf 'incomplete'
+  else
+    printf 'missing'
+  fi
+}
+
 curl_bin() {
   if [ -n "${DEVFIX_CURL_BIN:-}" ] && [ -x "$DEVFIX_CURL_BIN" ]; then
     printf '%s' "$DEVFIX_CURL_BIN"
@@ -291,7 +304,6 @@ write_torrc() {
   port="$1"
   ensure_dirs
   q_data=$(torrc_quote "$DEVFIX_TOR_DATA_DIR")
-  q_log=$(torrc_quote "$DEVFIX_TOR_LOG")
   q_pt=$(torrc_quote "$DEVFIX_LYREBIRD_BIN")
   cat > "$DEVFIX_TORRC" <<EOF_TORRC
 DataDirectory $q_data
@@ -301,7 +313,7 @@ AvoidDiskWrites 1
 UseBridges 1
 ClientTransportPlugin snowflake exec $q_pt
 Bridge $SNOWFLAKE_BRIDGE
-Log notice file $q_log
+Log notice stdout
 EOF_TORRC
   chmod 600 "$DEVFIX_TORRC" 2>/dev/null || true
 }
@@ -357,13 +369,27 @@ start_snowflake() {
   fi
 
   elapsed=0
+  last_progress=""
+  last_progress_at=0
   while [ "$elapsed" -lt "$DEVFIX_BOOTSTRAP_TIMEOUT" ]; do
     if ! is_pid_alive "$pid"; then
-      tail -n 20 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
+      tail -n 30 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
       clear_state
       warn "TRANSPORT_FAILURE: Snowflake/Tor exited before bootstrap completed."
       return 1
     fi
+
+    latest_progress=$(grep 'Bootstrapped [0-9][0-9]*%' "$DEVFIX_TOR_LOG" 2>/dev/null | tail -n 1)
+    if [ -n "$latest_progress" ] && [ "$latest_progress" != "$last_progress" ]; then
+      progress_text=$(printf '%s
+' "$latest_progress" | sed 's/^.*Bootstrapped /Bootstrapped /')
+      info "Snowflake: $progress_text"
+      last_progress="$latest_progress"
+      last_progress_at="$elapsed"
+    elif [ "$elapsed" -gt 0 ] && [ $((elapsed % 30)) -eq 0 ]; then
+      info "Snowflake bootstrap still in progress (${elapsed}s/${DEVFIX_BOOTSTRAP_TIMEOUT}s)..."
+    fi
+
     if grep -q 'Bootstrapped 100%' "$DEVFIX_TOR_LOG" 2>/dev/null && port_in_use "$port"; then
       if probe_critical_quiet snowflake; then
         ok "Connected with built-in Snowflake."
@@ -371,14 +397,31 @@ start_snowflake() {
         return 0
       fi
     fi
+
+    if [ -n "$last_progress" ] && [ $((elapsed - last_progress_at)) -ge "$DEVFIX_BOOTSTRAP_STALL_TIMEOUT" ]; then
+      progress_text=$(printf '%s
+' "$last_progress" | sed 's/^.*Bootstrapped /Bootstrapped /')
+      stop_tor_pid "$pid"
+      clear_state
+      tail -n 30 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
+      warn "TRANSPORT_FAILURE: Snowflake stalled at $progress_text for ${DEVFIX_BOOTSTRAP_STALL_TIMEOUT}s."
+      return 1
+    fi
+
     sleep 1
     elapsed=$((elapsed + 1))
   done
 
+  if [ -n "$last_progress" ]; then
+    progress_text=$(printf '%s
+' "$last_progress" | sed 's/^.*Bootstrapped /Bootstrapped /')
+  else
+    progress_text="no bootstrap progress reported"
+  fi
   stop_tor_pid "$pid"
   clear_state
-  tail -n 20 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
-  warn "TRANSPORT_FAILURE: Snowflake could not establish a working route."
+  tail -n 30 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
+  warn "TRANSPORT_FAILURE: Snowflake bootstrap timed out after ${DEVFIX_BOOTSTRAP_TIMEOUT}s at $progress_text."
   return 1
 }
 
@@ -526,11 +569,13 @@ cmd_transport() {
   case "$action" in
     list)
       printf 'direct          built-in   always available\n'
-      if snowflake_available; then
-        printf 'snowflake       built-in   available\n'
-      else
-        printf 'snowflake       built-in   not installed\n'
-      fi
+      payload_state=$(snowflake_payload_state)
+      case "$payload_state" in
+        available) printf 'snowflake       built-in   available\n' ;;
+        inaccessible) printf 'snowflake       built-in   inaccessible (permissions)\n' ;;
+        incomplete) printf 'snowflake       built-in   incomplete payload\n' ;;
+        *) printf 'snowflake       built-in   not installed\n' ;;
+      esac
       load_config
       if [ -n "$EXTERNAL_PROXY" ]; then
         printf 'external-proxy  optional   configured\n'
@@ -787,11 +832,13 @@ cmd_doctor() {
 
   printf '\nTransports\n----------\n'
   printf '  %-20s %s\n' direct available
-  if snowflake_available; then
-    printf '  %-20s %s\n' snowflake available
-  else
-    printf '  %-20s %s\n' snowflake 'NOT INSTALLED'
-  fi
+  payload_state=$(snowflake_payload_state)
+  case "$payload_state" in
+    available) printf '  %-20s %s\n' snowflake available ;;
+    inaccessible) printf '  %-20s %s\n' snowflake 'INACCESSIBLE (permissions)' ;;
+    incomplete) printf '  %-20s %s\n' snowflake 'INCOMPLETE PAYLOAD' ;;
+    *) printf '  %-20s %s\n' snowflake 'NOT INSTALLED' ;;
+  esac
   if [ -n "$EXTERNAL_PROXY" ]; then
     printf '  %-20s %s\n' external-proxy configured
   else
@@ -806,11 +853,14 @@ cmd_doctor() {
     printf 'Primary issue: DIRECT NETWORK OK\n'
     printf 'Recommendation: use direct; DevFix will avoid unnecessary tunneling.\n'
   elif snowflake_available; then
-    printf 'Primary issue: NETWORK_BLOCKED_OR_UNREACHABLE\n'
-    printf 'Recommendation: run devfix connect; auto mode will try built-in Snowflake.\n'
+    printf 'Primary issue: PARTIAL_DEVELOPER_NETWORK\n'
+    printf 'Recommendation: run devfix connect; auto mode will try built-in Snowflake for required endpoints.\n'
+  elif [ "$(snowflake_payload_state)" = "inaccessible" ]; then
+    printf 'Primary issue: SNOWFLAKE_PAYLOAD_PERMISSIONS\n'
+    printf 'Recommendation: install the latest DevFix package; its upgrade repair fixes legacy payload permissions.\n'
   else
     printf 'Primary issue: NETWORK_BLOCKED_OR_UNREACHABLE\n'
-    printf 'Recommendation: reinstall the self-contained DevFix package; Snowflake payload is missing.\n'
+    printf 'Recommendation: reinstall the self-contained DevFix package; Snowflake payload is missing or incomplete.\n'
   fi
 
   if [ "$verbose" -eq 1 ]; then
@@ -871,7 +921,7 @@ cmd_config() {
 
 print_help() {
   cat <<'EOF_HELP'
-DevFix 2.0.0 - built-in developer-network routing for Intel macOS
+DevFix - built-in developer-network routing for Intel macOS
 
 Usage:
   devfix doctor [--verbose]

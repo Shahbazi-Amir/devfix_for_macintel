@@ -36,6 +36,7 @@ as_root mkdir -p "$TARGET/bin" "$TARGET/libexec/devfix" "$TARGET/share/man/man1"
 as_root cp "$ROOT/bin/devfix" "$TARGET/bin/devfix"
 as_root rm -rf "$TARGET/libexec/devfix/tor"
 as_root cp -R "$TOR_SOURCE" "$TARGET/libexec/devfix/tor"
+as_root chmod -R a+rX "$TARGET/libexec/devfix/tor"
 as_root cp "$ROOT/share/man/man1/devfix.1" "$TARGET/share/man/man1/devfix.1"
 for f in README.md SECURITY.md THIRD_PARTY_NOTICES.md LICENSE uninstall.sh; do
   [ -f "$ROOT/share/devfix/$f" ] && as_root cp "$ROOT/share/devfix/$f" "$TARGET/share/devfix/$f"

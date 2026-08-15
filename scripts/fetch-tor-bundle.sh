@@ -48,6 +48,7 @@ fi
 rm -rf "$DEST"
 mkdir -p "$(dirname "$DEST")"
 cp -R "$source_dir" "$DEST"
+chmod -R a+rX "$DEST"
 chmod +x "$DEST/tor" "$DEST/pluggable_transports/lyrebird"
 cat > "$DEST/DEVFIX_BUNDLE_SOURCE.txt" <<EOF_META
 Source: Tor Project official package archive

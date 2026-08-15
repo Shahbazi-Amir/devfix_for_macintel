@@ -58,6 +58,11 @@ out=$("$DEVFIX" transport list)
 assert_contains "snowflake listed" "snowflake" "$out"
 assert_contains "snowflake available" "available" "$out"
 
+chmod 600 "$TMP/libexec/tor"
+out=$("$DEVFIX" transport list)
+assert_contains "snowflake permission diagnosis" "inaccessible (permissions)" "$out"
+chmod 755 "$TMP/libexec/tor"
+
 out=$("$DEVFIX" proxy status)
 assert_contains "proxy optional" "optional" "$out"
 "$DEVFIX" proxy set socks5h://127.0.0.1:9999 >/dev/null
@@ -73,6 +78,8 @@ assert_contains "direct connected" "Transport: direct" "$out"
 
 export DEVFIX_TEST_MODE=1
 "$DEVFIX" connect snowflake >/dev/null
+if grep -Fq 'Log notice stdout' "$DEVFIX_STATE_DIR/run/torrc"; then pass "tor logs to stdout"; else fail "tor logs to stdout"; fi
+if grep -Fq 'Log notice file' "$DEVFIX_STATE_DIR/run/torrc"; then fail "tor avoids direct log file"; else pass "tor avoids direct log file"; fi
 out=$("$DEVFIX" status)
 assert_contains "snowflake connected" "Transport: snowflake" "$out"
 assert_contains "snowflake socks" "Local SOCKS: 127.0.0.1:" "$out"
