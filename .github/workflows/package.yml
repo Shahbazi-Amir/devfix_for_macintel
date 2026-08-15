@@ -1,0 +1,32 @@
+name: Package
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build Intel macOS package
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test before packaging
+        run: ./tests/test_devfix.sh
+      - name: Build package
+        run: ./scripts/build-pkg.sh
+      - name: Show checksums
+        run: cat dist/SHA256SUMS
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: DevFix-${{ github.sha }}
+          path: |
+            dist/DevFix-*.pkg
+            dist/DevFix-*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
