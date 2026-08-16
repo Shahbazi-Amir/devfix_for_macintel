@@ -1,0 +1,357 @@
+#!/bin/bash
+# DevFix Tunnel — isolated transport-core prototype
+# Branch-owned foundation for general macOS routing. It does NOT modify macOS System Proxy yet.
+
+set -u
+
+TUNNEL_VERSION="0.1.0-alpha"
+TUNNEL_NAME="DevFix Tunnel"
+TUNNEL_TEST_MODE="${DEVFIX_TUNNEL_TEST_MODE:-0}"
+
+if [ "$(uname -s 2>/dev/null || printf unknown)" = "Darwin" ]; then
+  TUNNEL_STATE_ROOT="${DEVFIX_TUNNEL_STATE_DIR:-$HOME/Library/Application Support/DevFixTunnel}"
+  TUNNEL_LOG_DIR="${DEVFIX_TUNNEL_LOG_DIR:-$HOME/Library/Logs/DevFixTunnel}"
+else
+  TUNNEL_STATE_ROOT="${DEVFIX_TUNNEL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/devfix-tunnel}"
+  TUNNEL_LOG_DIR="${DEVFIX_TUNNEL_LOG_DIR:-$TUNNEL_STATE_ROOT/logs}"
+fi
+
+# Reuse the proven, verified DevFix runtime payload read-only for now. State/data are never shared.
+TUNNEL_LIBEXEC_DIR="${DEVFIX_TUNNEL_LIBEXEC_DIR:-/usr/local/libexec/devfix}"
+TUNNEL_TOR_BIN="${DEVFIX_TUNNEL_TOR_BIN:-$TUNNEL_LIBEXEC_DIR/tor/tor}"
+TUNNEL_LYREBIRD_BIN="${DEVFIX_TUNNEL_LYREBIRD_BIN:-$TUNNEL_LIBEXEC_DIR/tor/pluggable_transports/lyrebird}"
+TUNNEL_RUN_DIR="$TUNNEL_STATE_ROOT/run"
+TUNNEL_TOR_DATA_DIR="$TUNNEL_STATE_ROOT/tor-data"
+TUNNEL_STATE_FILE="$TUNNEL_RUN_DIR/state"
+TUNNEL_PID_FILE="$TUNNEL_RUN_DIR/tor.pid"
+TUNNEL_TORRC="$TUNNEL_RUN_DIR/torrc"
+TUNNEL_LOG="$TUNNEL_LOG_DIR/devfix-tunnel.log"
+TUNNEL_TOR_LOG="$TUNNEL_LOG_DIR/tor.log"
+
+DEFAULT_SOCKS_PORT="${DEVFIX_TUNNEL_SOCKS_PORT:-19150}"
+BOOTSTRAP_TIMEOUT="${DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT:-600}"
+STALL_TIMEOUT="${DEVFIX_TUNNEL_STALL_TIMEOUT:-180}"
+VALIDATION_TIMEOUT="${DEVFIX_TUNNEL_VALIDATION_TIMEOUT:-30}"
+
+# Same proven bridge configuration as DevFix 2.0.4, overrideable for controlled updates/tests.
+DEFAULT_SNOWFLAKE_BRIDGE='snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 url=https://1098762253.rsc.cdn77.org front=www.phpmyadmin.net,cdn.zk.mk ice=stun:stun.antisip.com:3478,stun:stun.epygi.com:3478,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.mixvoip.com:3478,stun:stun.nextcloud.com:3478,stun:stun.bethesda.net:3478,stun:stun.nextcloud.com:443 utls-imitate=hellorandomizedalpn'
+SNOWFLAKE_BRIDGE="${DEVFIX_TUNNEL_SNOWFLAKE_BRIDGE:-$DEFAULT_SNOWFLAKE_BRIDGE}"
+
+info() { printf '%s\n' "$*"; }
+warn() { printf 'Warning: %s\n' "$*" >&2; }
+err() { printf 'Error: %s\n' "$*" >&2; }
+die() { err "$*"; exit 1; }
+now_utc() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+now_epoch() { date '+%s'; }
+
+ensure_dirs() {
+  umask 077
+  mkdir -p "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_DIR" "$TUNNEL_LOG_DIR" || die "cannot create tunnel state directories"
+  chmod 700 "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_DIR" "$TUNNEL_LOG_DIR" 2>/dev/null || true
+}
+
+log_line() {
+  ensure_dirs
+  printf '%s %s\n' "$(now_utc)" "$*" >> "$TUNNEL_LOG" 2>/dev/null || true
+}
+
+atomic_state() {
+  state="$1"; pid="$2"; port="$3"; session="$4"; started="$5"
+  ensure_dirs
+  tmp="$TUNNEL_STATE_FILE.tmp.$$"
+  umask 077
+  {
+    printf 'SCHEMA=1\n'
+    printf 'STATE=%s\n' "$state"
+    printf 'PID=%s\n' "$pid"
+    printf 'SOCKS_PORT=%s\n' "$port"
+    printf 'SESSION=%s\n' "$session"
+    printf 'STARTED=%s\n' "$started"
+    printf 'TORRC=%s\n' "$TUNNEL_TORRC"
+  } > "$tmp" || die "cannot write temporary tunnel state"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$TUNNEL_STATE_FILE" || die "cannot atomically replace tunnel state"
+}
+
+state_get() {
+  key="$1"; default_value="${2:-}"
+  [ -f "$TUNNEL_STATE_FILE" ] || { printf '%s' "$default_value"; return; }
+  value=$(sed -n "s/^${key}=//p" "$TUNNEL_STATE_FILE" | tail -n 1)
+  [ -n "$value" ] && printf '%s' "$value" || printf '%s' "$default_value"
+}
+
+is_pid_alive() {
+  pid="$1"
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null
+}
+
+process_command() {
+  pid="$1"
+  ps -p "$pid" -o command= 2>/dev/null || true
+}
+
+pid_is_owned() {
+  pid="$1"
+  is_pid_alive "$pid" || return 1
+  [ "$TUNNEL_TEST_MODE" = "1" ] && return 0
+  cmd=$(process_command "$pid")
+  [ -n "$cmd" ] || return 1
+  case "$cmd" in
+    *"$TUNNEL_TOR_BIN"*"$TUNNEL_TORRC"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+clear_runtime_state() {
+  rm -f "$TUNNEL_STATE_FILE" "$TUNNEL_PID_FILE" "$TUNNEL_TORRC"
+}
+
+port_in_use() {
+  port="$1"
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -w 1 127.0.0.1 "$port" >/dev/null 2>&1
+    return $?
+  fi
+  return 1
+}
+
+choose_socks_port() {
+  p="$1"; i=0
+  while [ "$i" -lt 10 ]; do
+    if ! port_in_use "$p"; then printf '%s' "$p"; return 0; fi
+    p=$((p + 1)); i=$((i + 1))
+  done
+  return 1
+}
+
+torrc_quote() {
+  printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+}
+
+write_torrc() {
+  port="$1"
+  ensure_dirs
+  q_data=$(torrc_quote "$TUNNEL_TOR_DATA_DIR")
+  case "$TUNNEL_LYREBIRD_BIN" in *' '*|*$'\t'*|*$'\n'*|*$'\r'*) die "lyrebird path contains whitespace" ;; esac
+  cat > "$TUNNEL_TORRC" <<EOF
+DataDirectory $q_data
+SocksPort 127.0.0.1:$port
+ClientOnly 1
+AvoidDiskWrites 1
+UseBridges 1
+ClientTransportPlugin snowflake exec $TUNNEL_LYREBIRD_BIN
+Bridge $SNOWFLAKE_BRIDGE
+Log notice stdout
+EOF
+  chmod 600 "$TUNNEL_TORRC" 2>/dev/null || true
+}
+
+curl_bin() {
+  if [ -n "${DEVFIX_TUNNEL_CURL_BIN:-}" ] && [ -x "$DEVFIX_TUNNEL_CURL_BIN" ]; then
+    printf '%s' "$DEVFIX_TUNNEL_CURL_BIN"
+  elif [ -x /usr/bin/curl ]; then
+    printf '%s' /usr/bin/curl
+  elif command -v curl >/dev/null 2>&1; then
+    command -v curl
+  else
+    return 1
+  fi
+}
+
+validate_socks_route() {
+  port="$1"
+  [ "$TUNNEL_TEST_MODE" = "1" ] && return 0
+  cb=$(curl_bin) || return 1
+  for url in 'https://www.torproject.org/' 'https://example.com/'; do
+    code=$("$cb" -L -sS -o /dev/null -w '%{http_code}' --proxy "socks5h://127.0.0.1:$port" --connect-timeout 10 --max-time "$VALIDATION_TIMEOUT" "$url" 2>/dev/null || printf '000')
+    case "$code" in 2??|3??|401|403) return 0 ;; esac
+  done
+  return 1
+}
+
+bootstrap_percent() {
+  [ -f "$TUNNEL_TOR_LOG" ] || { printf '0'; return; }
+  value=$(sed -nE 's/.*Bootstrapped ([0-9]+)%.*/\1/p' "$TUNNEL_TOR_LOG" | tail -n 1)
+  case "$value" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$value" ;; esac
+}
+
+stop_owned_tor() {
+  pid="$1"
+  if ! is_pid_alive "$pid"; then return 0; fi
+  if ! pid_is_owned "$pid"; then
+    warn "refusing to terminate PID $pid because tunnel ownership could not be proven"
+    return 2
+  fi
+  kill "$pid" 2>/dev/null || true
+  deadline=$(( $(now_epoch) + 5 ))
+  while is_pid_alive "$pid" && [ "$(now_epoch)" -lt "$deadline" ]; do sleep 0.25; done
+  if is_pid_alive "$pid"; then kill -KILL "$pid" 2>/dev/null || true; fi
+  return 0
+}
+
+cmd_connect() {
+  ensure_dirs
+  [ -x "$TUNNEL_TOR_BIN" ] || die "Tor runtime missing: $TUNNEL_TOR_BIN"
+  [ -x "$TUNNEL_LYREBIRD_BIN" ] || die "lyrebird runtime missing: $TUNNEL_LYREBIRD_BIN"
+
+  old_pid=$(state_get PID '')
+  old_state=$(state_get STATE '')
+  if [ "$old_state" = "CONNECTED" ] && pid_is_owned "$old_pid"; then
+    info "DevFix Tunnel is already connected."
+    exit 0
+  fi
+  if [ -n "$old_pid" ] && is_pid_alive "$old_pid" && ! pid_is_owned "$old_pid"; then
+    die "stale state references a live process not owned by DevFix Tunnel; refusing destructive cleanup"
+  fi
+  clear_runtime_state
+
+  port=$(choose_socks_port "$DEFAULT_SOCKS_PORT") || die "no free local SOCKS port in $DEFAULT_SOCKS_PORT-$((DEFAULT_SOCKS_PORT + 9))"
+  write_torrc "$port"
+  : > "$TUNNEL_TOR_LOG"
+  chmod 600 "$TUNNEL_TOR_LOG" 2>/dev/null || true
+  session="$(now_epoch)-$$"
+  started="$(now_utc)"
+  atomic_state STARTING '' "$port" "$session" "$started"
+
+  info "Starting DevFix Tunnel Snowflake transport..."
+  "$TUNNEL_TOR_BIN" -f "$TUNNEL_TORRC" >> "$TUNNEL_TOR_LOG" 2>&1 &
+  pid=$!
+  printf '%s\n' "$pid" > "$TUNNEL_PID_FILE"
+  chmod 600 "$TUNNEL_PID_FILE" 2>/dev/null || true
+  atomic_state BOOTSTRAPPING "$pid" "$port" "$session" "$started"
+  log_line "session=$session state=BOOTSTRAPPING pid=$pid port=$port"
+
+  start_epoch=$(now_epoch)
+  deadline=$((start_epoch + BOOTSTRAP_TIMEOUT))
+  last_progress_epoch=$start_epoch
+  last_percent=-1
+
+  while [ "$(now_epoch)" -lt "$deadline" ]; do
+    if ! is_pid_alive "$pid"; then
+      atomic_state FAILED "$pid" "$port" "$session" "$started"
+      err "TRANSPORT_PROCESS_FAILURE: Tor exited before bootstrap completed."
+      exit 1
+    fi
+    percent=$(bootstrap_percent)
+    if [ "$percent" != "$last_percent" ]; then
+      info "Bootstrapped ${percent}%"
+      last_percent="$percent"
+      last_progress_epoch=$(now_epoch)
+    fi
+    if [ "$percent" -ge 100 ] 2>/dev/null; then break; fi
+    if [ $(( $(now_epoch) - last_progress_epoch )) -ge "$STALL_TIMEOUT" ]; then
+      stop_owned_tor "$pid" || true
+      atomic_state FAILED "$pid" "$port" "$session" "$started"
+      err "SNOWFLAKE_BOOTSTRAP_FAILURE: bootstrap stalled at ${percent}% for ${STALL_TIMEOUT}s."
+      exit 1
+    fi
+    sleep 1
+  done
+
+  percent=$(bootstrap_percent)
+  if [ "$percent" -lt 100 ] 2>/dev/null; then
+    stop_owned_tor "$pid" || true
+    atomic_state FAILED "$pid" "$port" "$session" "$started"
+    err "TIMEOUT: Snowflake did not reach 100% within ${BOOTSTRAP_TIMEOUT}s."
+    exit 1
+  fi
+
+  atomic_state VALIDATING "$pid" "$port" "$session" "$started"
+  info "Snowflake bootstrap complete; validating SOCKS route..."
+  if ! validate_socks_route "$port"; then
+    stop_owned_tor "$pid" || true
+    atomic_state FAILED "$pid" "$port" "$session" "$started"
+    err "ROUTE_VALIDATION_FAILURE: Tor reached 100% but routed HTTPS validation failed."
+    exit 1
+  fi
+
+  atomic_state CONNECTED "$pid" "$port" "$session" "$started"
+  log_line "session=$session state=CONNECTED pid=$pid port=$port"
+  info "Connected with DevFix Tunnel Snowflake."
+  info "Local SOCKS: socks5h://127.0.0.1:$port"
+  info "System Proxy is NOT modified in this milestone."
+}
+
+cmd_status() {
+  state=$(state_get STATE DISCONNECTED)
+  pid=$(state_get PID '')
+  port=$(state_get SOCKS_PORT '')
+  session=$(state_get SESSION '')
+  printf 'DevFix Tunnel %s\n' "$TUNNEL_VERSION"
+  printf 'State: %s\n' "$state"
+  [ -n "$session" ] && printf 'Session: %s\n' "$session"
+  [ -n "$port" ] && printf 'SOCKS: socks5h://127.0.0.1:%s\n' "$port"
+  if [ -n "$pid" ]; then
+    if pid_is_owned "$pid"; then printf 'Tor PID: %s (owned/alive)\n' "$pid";
+    elif is_pid_alive "$pid"; then printf 'Tor PID: %s (alive, ownership NOT proven)\n' "$pid";
+    else printf 'Tor PID: %s (not alive)\n' "$pid"; fi
+  fi
+  if [ "$state" = "CONNECTED" ] && ! pid_is_owned "$pid"; then
+    printf 'Health: DEGRADED\n'
+    return 1
+  fi
+}
+
+cmd_disconnect() {
+  pid=$(state_get PID '')
+  if [ -n "$pid" ] && is_pid_alive "$pid"; then
+    atomic_state RESTORING "$pid" "$(state_get SOCKS_PORT '')" "$(state_get SESSION '')" "$(state_get STARTED '')"
+    stop_owned_tor "$pid" || die "could not safely stop tunnel-owned Tor process"
+  fi
+  clear_runtime_state
+  log_line "state=DISCONNECTED"
+  info "DevFix Tunnel disconnected."
+  info "No macOS System Proxy settings were changed by this milestone."
+}
+
+cmd_doctor() {
+  fail=0
+  printf 'DevFix Tunnel %s doctor\n' "$TUNNEL_VERSION"
+  printf 'OS: %s\n' "$(uname -s 2>/dev/null || printf unknown)"
+  printf 'Arch: %s\n' "$(uname -m 2>/dev/null || printf unknown)"
+  if [ -x "$TUNNEL_TOR_BIN" ]; then printf 'Tor runtime: OK\n'; else printf 'Tor runtime: MISSING (%s)\n' "$TUNNEL_TOR_BIN"; fail=1; fi
+  if [ -x "$TUNNEL_LYREBIRD_BIN" ]; then printf 'lyrebird: OK\n'; else printf 'lyrebird: MISSING (%s)\n' "$TUNNEL_LYREBIRD_BIN"; fail=1; fi
+  printf 'State root: %s\n' "$TUNNEL_STATE_ROOT"
+  printf 'Tor data: %s\n' "$TUNNEL_TOR_DATA_DIR"
+  printf 'DevFix state collision: %s\n' "$([ "$TUNNEL_STATE_ROOT" = "$HOME/Library/Application Support/DevFix" ] && printf FAIL || printf PASS)"
+  return "$fail"
+}
+
+cmd_logs() {
+  lines="${1:-100}"
+  case "$lines" in ''|*[!0-9]*) die "logs line count must be numeric" ;; esac
+  [ -f "$TUNNEL_LOG" ] && tail -n "$lines" "$TUNNEL_LOG"
+  [ -f "$TUNNEL_TOR_LOG" ] && { printf '%s\n' '--- tor.log ---'; tail -n "$lines" "$TUNNEL_TOR_LOG"; }
+}
+
+usage() {
+  cat <<'EOF'
+DevFix Tunnel 0.1.0-alpha — transport core
+
+Usage:
+  devfix-tunnel connect
+  devfix-tunnel status
+  devfix-tunnel disconnect
+  devfix-tunnel restart
+  devfix-tunnel doctor
+  devfix-tunnel logs [N]
+  devfix-tunnel version
+
+This milestone exposes a local Snowflake/Tor SOCKS route only.
+It does NOT change macOS System Proxy settings and is NOT yet a full VPN.
+EOF
+}
+
+cmd="${1:-help}"
+case "$cmd" in
+  connect) cmd_connect ;;
+  status) cmd_status ;;
+  disconnect) cmd_disconnect ;;
+  restart) cmd_disconnect; cmd_connect ;;
+  doctor) cmd_doctor ;;
+  logs) cmd_logs "${2:-100}" ;;
+  version|--version|-v) printf '%s %s\n' "$TUNNEL_NAME" "$TUNNEL_VERSION" ;;
+  help|--help|-h) usage ;;
+  *) err "unknown command: $cmd"; usage >&2; exit 2 ;;
+esac

@@ -1,0 +1,44 @@
+name: DevFix Tunnel CI
+
+on:
+  push:
+    branches:
+      - feature/devfix-tunnel
+  pull_request:
+    paths:
+      - 'tunnel/**'
+      - 'docs/tunnel/**'
+      - 'tests/test_devfix_tunnel.sh'
+      - '.github/workflows/tunnel-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  tunnel-shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Shell syntax
+        run: bash -n tunnel/cli/devfix-tunnel tests/test_devfix_tunnel.sh
+      - name: ShellCheck tunnel
+        run: shellcheck -x tunnel/cli/devfix-tunnel tests/test_devfix_tunnel.sh
+      - name: Tunnel tests
+        run: bash tests/test_devfix_tunnel.sh
+
+  inherited-devfix-regression:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Existing DevFix syntax
+        run: bash -n bin/devfix install.sh uninstall.sh scripts/*.sh tests/test_devfix.sh tests/test_install.sh
+      - name: Existing DevFix core tests
+        run: bash tests/test_devfix.sh
+      - name: Existing installer smoke test
+        run: bash tests/test_install.sh
