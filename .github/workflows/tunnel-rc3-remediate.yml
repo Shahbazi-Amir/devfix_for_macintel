@@ -36,7 +36,7 @@ jobs:
           git config user.email "36712410+Shahbazi-Amir@users.noreply.github.com"
           git add tunnel tests docs/tunnel/remediations
           git diff --cached --check
-          git commit -m "fix(tunnel): preserve directory progress in rc3"
+          git commit -m "fix(tunnel): preserve directory cache across fallback"
           git push origin HEAD:feature/devfix-tunnel
 
-# rc3 rerun after shellcheck-clean regression assertions
+# rerun after persistent-cache redesign
