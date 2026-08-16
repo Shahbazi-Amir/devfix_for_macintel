@@ -28,7 +28,7 @@ jobs:
             /tmp/devfix-tunnel-transports.tsv
           test "$(awk -F '\t' '$1=="snowflake" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 2
           test "$(awk -F '\t' '$1=="meek" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 1
-          test "$(awk -F '\t' '$1=="obfs4" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 1
+          test "$(awk -F '\t' '$1=="obfs4" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 7
 
       - name: Verify V5 torrc with packaged Tor parser
         run: |
@@ -46,7 +46,7 @@ jobs:
         run: |
           PKG=$(ls build/tunnel/DevFixTunnel-*-macos-x86_64.pkg)
           sudo installer -pkg "$PKG" -target /
-          /usr/local/bin/devfix-tunnel version | grep -F "0.3.0-rc1"
+          /usr/local/bin/devfix-tunnel version | grep -F "0.3.0-rc2"
           test -x /usr/local/bin/devfix-tunnel-chrome
           bash -n /usr/local/bin/devfix-tunnel-chrome
           sudo /usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian version | grep -F "0.2.0-rc1"
@@ -57,7 +57,7 @@ jobs:
           test -f /usr/local/share/devfix-tunnel/transports.tsv
           test "$(awk -F '\t' '$1=="snowflake" {n++} END{print n+0}' /usr/local/share/devfix-tunnel/transports.tsv)" -ge 2
           test "$(awk -F '\t' '$1=="meek" {n++} END{print n+0}' /usr/local/share/devfix-tunnel/transports.tsv)" -ge 1
-          test "$(awk -F '\t' '$1=="obfs4" {n++} END{print n+0}' /usr/local/share/devfix-tunnel/transports.tsv)" -ge 1
+          test "$(awk -F '\t' '$1=="obfs4" {n++} END{print n+0}' /usr/local/share/devfix-tunnel/transports.tsv)" -ge 7
           test -f /Library/LaunchDaemons/com.devfix.tunnel.recovery.plist
           /usr/local/bin/devfix-tunnel doctor
           /bin/bash tests/test_devfix_tunnel_tor_config.sh \
@@ -71,10 +71,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DevFixTunnel-0.3.0-rc1-macos-x86_64
+          name: DevFixTunnel-0.3.0-rc2-macos-x86_64
           path: |
-            build/tunnel/DevFixTunnel-0.3.0-rc1-macos-x86_64.pkg
-            build/tunnel/DevFixTunnel-0.3.0-rc1-macos-x86_64.tar.gz
+            build/tunnel/DevFixTunnel-0.3.0-rc2-macos-x86_64.pkg
+            build/tunnel/DevFixTunnel-0.3.0-rc2-macos-x86_64.tar.gz
             build/tunnel/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
