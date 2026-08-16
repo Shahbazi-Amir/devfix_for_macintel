@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.4 - 2026-08-16
+
+- Fixed Snowflake post-bootstrap validation to probe the GHCR Registry API base endpoint (`/v2/`) instead of treating a repository root as a health endpoint.
+- Made bootstrap and validation deadlines use real wall-clock time, so slow endpoint probes cannot silently stretch a nominal timeout into many minutes.
+- Separated 100% Tor bootstrap from developer-route validation; 100% can no longer be misreported as a bootstrap stall.
+- Added a dedicated `ROUTE_VALIDATION_FAILURE` diagnosis for the rare case where Tor is fully bootstrapped but required developer endpoints remain unreachable.
+- Aligned `devfix brew` Snowflake routing with Homebrew's documented SOCKS environment by using process-scoped `all_proxy`/`ALL_PROXY` and clearing protocol-specific proxy variables for the brew subprocess.
+- Added regressions for the exact GHCR health endpoint, successful 100% bootstrap validation, post-100% failure classification, and Homebrew SOCKS environment.
+
 ## 2.0.3 - 2026-08-15
 
 - Fixed Tor managed-transport launch on Intel Monterey by removing a literal quote wrapper around the bundled lyrebird executable path.

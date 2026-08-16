@@ -25,13 +25,25 @@ mkdir -p "$HOME" "$TMP/bin" "$TMP/libexec/tor/pluggable_transports"
 
 cat > "$TMP/fakecurl" <<'SH'
 #!/bin/bash
+url=""
+seen_proxy=0
+for a in "$@"; do
+  [ "$a" != "--proxy" ] || seen_proxy=1
+  case "$a" in http://*|https://*) url="$a" ;; esac
+done
+[ -z "${FAKE_CURL_CAPTURE:-}" ] || printf '%s\n' "$url" >> "$FAKE_CURL_CAPTURE"
 case "${FAKE_CURL_MODE:-ok}" in
   ok) printf '200' ;;
   blocked) printf '000'; exit 28 ;;
+  registry-probe)
+    case "$url" in
+      https://ghcr.io/v2/) printf '401' ;;
+      https://ghcr.io/*) printf '404' ;;
+      *) printf '200' ;;
+    esac
+    ;;
   proxy-only)
-    seen=0
-    for a in "$@"; do [ "$a" != "--proxy" ] || seen=1; done
-    if [ "$seen" -eq 1 ]; then printf '200'; else printf '000'; exit 28; fi
+    if [ "$seen_proxy" -eq 1 ]; then printf '200'; else printf '000'; exit 28; fi
     ;;
 esac
 SH
@@ -109,13 +121,58 @@ pt_rc=$?
 set -e
 if [ "$pt_rc" -ne 0 ]; then pass "managed transport crash returns failure"; else fail "managed transport crash returns failure"; fi
 assert_contains "managed transport crash classified" "PLUGGABLE_TRANSPORT_FAILURE" "$pt_err"
+
+# 100% bootstrap must validate against the registry API base endpoint and succeed.
+cat > "$TMP/libexec/tor/tor" <<'SH'
+#!/bin/bash
+torrc="${2:-}"
+port=$(sed -n 's/^SocksPort 127.0.0.1://p' "$torrc" | head -n 1)
+echo 'Bootstrapped 100% (done): Done'
+exec python3 - "$port" <<'PY'
+import socket, sys
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1])))
+s.listen(16)
+while True:
+    c, _ = s.accept()
+    c.close()
+PY
+SH
+chmod +x "$TMP/libexec/tor/tor"
+unset DEVFIX_TEST_MODE
+export DEVFIX_BOOTSTRAP_TIMEOUT=10
+export DEVFIX_BOOTSTRAP_STALL_TIMEOUT=5
+export DEVFIX_ROUTE_VALIDATION_TIMEOUT=3
+export FAKE_CURL_CAPTURE="$TMP/curl-urls"
+: > "$FAKE_CURL_CAPTURE"
+set +e
+route_out=$(FAKE_CURL_MODE=registry-probe "$DEVFIX" connect snowflake 2>&1)
+route_rc=$?
+set -e
+assert_eq "100 percent bootstrap validates successfully" "0" "$route_rc"
+assert_contains "100 percent bootstrap reports connected" "Connected with built-in Snowflake." "$route_out"
+if grep -Fxq 'https://ghcr.io/v2/' "$FAKE_CURL_CAPTURE"; then pass "registry base endpoint used"; else fail "registry base endpoint used"; fi
+if grep -Fq 'https://ghcr.io/v2/homebrew/core/' "$FAKE_CURL_CAPTURE"; then fail "repository root is not used as health endpoint"; else pass "repository root is not used as health endpoint"; fi
+"$DEVFIX" disconnect >/dev/null
+
+# A failed post-100% route check is not a bootstrap stall.
+: > "$FAKE_CURL_CAPTURE"
+set +e
+validation_err=$(FAKE_CURL_MODE=blocked "$DEVFIX" connect snowflake 2>&1 >/dev/null)
+validation_rc=$?
+set -e
+if [ "$validation_rc" -ne 0 ]; then pass "route validation failure returns failure"; else fail "route validation failure returns failure"; fi
+assert_contains "route validation failure classified" "ROUTE_VALIDATION_FAILURE" "$validation_err"
+if printf '%s' "$validation_err" | grep -Fq 'stalled at Bootstrapped 100%'; then fail "100 percent is never classified as bootstrap stall"; else pass "100 percent is never classified as bootstrap stall"; fi
+
 cat > "$TMP/libexec/tor/tor" <<'SH'
 #!/bin/bash
 exec sleep 300
 SH
 chmod +x "$TMP/libexec/tor/tor"
 export DEVFIX_TEST_MODE=1
-unset DEVFIX_BOOTSTRAP_TIMEOUT DEVFIX_BOOTSTRAP_STALL_TIMEOUT
+unset DEVFIX_BOOTSTRAP_TIMEOUT DEVFIX_BOOTSTRAP_STALL_TIMEOUT DEVFIX_ROUTE_VALIDATION_TIMEOUT FAKE_CURL_CAPTURE
 
 # Auto mode falls back to Snowflake when direct is blocked.
 FAKE_CURL_MODE=blocked "$DEVFIX" config set-transport auto >/dev/null
@@ -146,7 +203,10 @@ unset http_proxy ALL_PROXY
 "$DEVFIX" connect snowflake >/dev/null
 "$DEVFIX" brew update >/dev/null
 captured=$(cat "$BREW_CAPTURE")
-assert_contains "snowflake wrapper proxy" "socks5h://127.0.0.1:" "$captured"
+case "$captured" in
+  '|socks5h://127.0.0.1:'*) pass "snowflake brew wrapper uses all_proxy SOCKS only" ;;
+  *) fail "snowflake brew wrapper uses all_proxy SOCKS only (captured=$captured)" ;;
+esac
 "$DEVFIX" disconnect >/dev/null
 
 # Error classification preserves tool exit status.

@@ -4,13 +4,14 @@
 
 set -u
 
-DEVFIX_VERSION="2.0.3"
+DEVFIX_VERSION="2.0.4"
 DEVFIX_NAME="DevFix"
 DEVFIX_LIBEXEC_DIR="${DEVFIX_LIBEXEC_DIR:-/usr/local/libexec/devfix}"
 DEVFIX_TOR_BIN="${DEVFIX_TOR_BIN:-$DEVFIX_LIBEXEC_DIR/tor/tor}"
 DEVFIX_LYREBIRD_BIN="${DEVFIX_LYREBIRD_BIN:-$DEVFIX_LIBEXEC_DIR/tor/pluggable_transports/lyrebird}"
 DEVFIX_BOOTSTRAP_TIMEOUT="${DEVFIX_BOOTSTRAP_TIMEOUT:-600}"
 DEVFIX_BOOTSTRAP_STALL_TIMEOUT="${DEVFIX_BOOTSTRAP_STALL_TIMEOUT:-180}"
+DEVFIX_ROUTE_VALIDATION_TIMEOUT="${DEVFIX_ROUTE_VALIDATION_TIMEOUT:-30}"
 DEVFIX_TEST_MODE="${DEVFIX_TEST_MODE:-0}"
 
 if [ "$(uname -s 2>/dev/null || printf unknown)" = "Darwin" ]; then
@@ -255,7 +256,7 @@ probe_critical_quiet() {
   for url in \
     'https://github.com/' \
     'https://formulae.brew.sh/api/formula/git.json' \
-    'https://ghcr.io/v2/homebrew/core/'; do
+    'https://ghcr.io/v2/'; do
     code=$(curl_http_code "$mode" "$url")
     http_code_ok "$code" || return 1
   done
@@ -267,7 +268,7 @@ probe_network() {
   fail=0
   probe_one "$mode" "GitHub" 'https://github.com/' || fail=$((fail + 1))
   probe_one "$mode" "Homebrew API" 'https://formulae.brew.sh/api/formula/git.json' || fail=$((fail + 1))
-  probe_one "$mode" "Homebrew bottles" 'https://ghcr.io/v2/homebrew/core/' || fail=$((fail + 1))
+  probe_one "$mode" "Homebrew bottles" 'https://ghcr.io/v2/' || fail=$((fail + 1))
   probe_one "$mode" "Ruby downloads" 'https://cache.ruby-lang.org/' || fail=$((fail + 1))
   [ "$fail" -eq 0 ]
 }
@@ -370,10 +371,18 @@ start_snowflake() {
     return 0
   fi
 
-  elapsed=0
+  started_at=$(date +%s)
   last_progress=""
-  last_progress_at=0
-  while [ "$elapsed" -lt "$DEVFIX_BOOTSTRAP_TIMEOUT" ]; do
+  last_progress_at="$started_at"
+  last_status_at="$started_at"
+  bootstrap_done=0
+  validation_started_at=0
+
+  while :; do
+    now=$(date +%s)
+    elapsed=$((now - started_at))
+    [ "$elapsed" -lt "$DEVFIX_BOOTSTRAP_TIMEOUT" ] || break
+
     if ! is_pid_alive "$pid"; then
       tail -n 30 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
       clear_state
@@ -397,20 +406,35 @@ start_snowflake() {
 ' "$latest_progress" | sed 's/^.*Bootstrapped /Bootstrapped /')
       info "Snowflake: $progress_text"
       last_progress="$latest_progress"
-      last_progress_at="$elapsed"
-    elif [ "$elapsed" -gt 0 ] && [ $((elapsed % 30)) -eq 0 ]; then
-      info "Snowflake bootstrap still in progress (${elapsed}s/${DEVFIX_BOOTSTRAP_TIMEOUT}s)..."
+      last_progress_at="$now"
     fi
 
-    if grep -q 'Bootstrapped 100%' "$DEVFIX_TOR_LOG" 2>/dev/null && port_in_use "$port"; then
-      if probe_critical_quiet snowflake; then
+    if grep -q 'Bootstrapped 100%' "$DEVFIX_TOR_LOG" 2>/dev/null; then
+      if [ "$bootstrap_done" -eq 0 ]; then
+        bootstrap_done=1
+        validation_started_at="$now"
+        info "Snowflake bootstrap complete; validating developer endpoints..."
+      fi
+
+      if port_in_use "$port" && probe_critical_quiet snowflake; then
         ok "Connected with built-in Snowflake."
         log_line "transport=snowflake action=connected"
         return 0
       fi
+
+      now=$(date +%s)
+      validation_elapsed=$((now - validation_started_at))
+      if [ "$validation_elapsed" -ge "$DEVFIX_ROUTE_VALIDATION_TIMEOUT" ]; then
+        stop_tor_pid "$pid"
+        clear_state
+        tail -n 30 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
+        warn "ROUTE_VALIDATION_FAILURE: Tor reached 100% bootstrap, but required developer endpoints were not reachable through Snowflake within ${DEVFIX_ROUTE_VALIDATION_TIMEOUT}s."
+        return 1
+      fi
     fi
 
-    if [ -n "$last_progress" ] && [ $((elapsed - last_progress_at)) -ge "$DEVFIX_BOOTSTRAP_STALL_TIMEOUT" ]; then
+    now=$(date +%s)
+    if [ "$bootstrap_done" -eq 0 ] && [ -n "$last_progress" ] && [ $((now - last_progress_at)) -ge "$DEVFIX_BOOTSTRAP_STALL_TIMEOUT" ]; then
       progress_text=$(printf '%s
 ' "$last_progress" | sed 's/^.*Bootstrapped /Bootstrapped /')
       stop_tor_pid "$pid"
@@ -420,8 +444,17 @@ start_snowflake() {
       return 1
     fi
 
+    if [ $((now - last_status_at)) -ge 30 ]; then
+      if [ "$bootstrap_done" -eq 1 ]; then
+        info "Snowflake route validation still in progress..."
+      else
+        elapsed=$((now - started_at))
+        info "Snowflake bootstrap still in progress (${elapsed}s/${DEVFIX_BOOTSTRAP_TIMEOUT}s)..."
+      fi
+      last_status_at="$now"
+    fi
+
     sleep 1
-    elapsed=$((elapsed + 1))
   done
 
   if [ -n "$last_progress" ]; then
@@ -433,7 +466,11 @@ start_snowflake() {
   stop_tor_pid "$pid"
   clear_state
   tail -n 30 "$DEVFIX_TOR_LOG" >&2 2>/dev/null || true
-  warn "TRANSPORT_FAILURE: Snowflake bootstrap timed out after ${DEVFIX_BOOTSTRAP_TIMEOUT}s at $progress_text."
+  if [ "$bootstrap_done" -eq 1 ]; then
+    warn "ROUTE_VALIDATION_FAILURE: Tor reached 100% bootstrap, but developer-route validation did not complete before the ${DEVFIX_BOOTSTRAP_TIMEOUT}s hard deadline."
+  else
+    warn "TRANSPORT_FAILURE: Snowflake bootstrap timed out after ${DEVFIX_BOOTSTRAP_TIMEOUT}s at $progress_text."
+  fi
   return 1
 }
 
@@ -733,6 +770,9 @@ run_tool_with_diagnosis() {
   shift
   ensure_route
   apply_route_env
+  if [ "$label" = "brew" ] && [ "$(file_get "$DEVFIX_STATE_FILE" TRANSPORT "")" = "snowflake" ]; then
+    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+  fi
   ensure_dirs
   tmp="$DEVFIX_RUN_DIR/${label}.stderr.$$"
   : > "$tmp"
