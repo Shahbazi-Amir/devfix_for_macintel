@@ -1,4 +1,4 @@
-# DevFix Tunnel 0.3.0-rc1 — V5 Engineering Status Lock
+# DevFix Tunnel 0.3.0-rc2 — Engineering Status Lock
 
 Date: 2026-08-16
 
@@ -8,306 +8,138 @@ Development branch: `feature/devfix-tunnel`
 
 Stable DevFix branch: `main` — READ-ONLY for Tunnel work
 
-## Release-candidate product identity
+## Exact validated RC2 identity
 
-Exact validated product/package commit:
+Final shared gate SHA:
 
-`e896afaacc3f3d241577a6614a6e5140166f4536`
+`1e56a6006be661dd1b4d743dd4aa98992c1e22a3`
 
-This is the exact code identity on which both final official V5 workflows passed and from which the locked V5 artifact was built.
+Both official Tunnel workflows passed on this exact SHA. Root-level status/acceptance documentation may advance the branch ref without changing the locked product/package identity above.
 
-Root-level status/prompt documentation may advance the branch ref after this commit without changing the validated Tunnel product/package bytes. The validated product identity remains the SHA above until any file affecting product, tests, build, package, or workflow gates changes and the gates are rerun.
+## Why RC2 replaced RC1
 
-## Why V5 replaced 0.2.0-rc1
+Physical Intel Monterey testing of `0.3.0-rc1` produced three concrete failure classes:
 
-Physical Intel Monterey acceptance of `0.2.0-rc1` proved package identity, installation, runtime presence, doctor, repair safety, and fail-closed proxy behavior. However two controlled real Snowflake sessions both stalled at 10% after broker rendezvous with repeated WebRTC `DataChannel.OnOpen` timeouts.
+1. `REAL_MAC_UNKNOWN_BRIDGE_EXCLUSION`
+   - Snowflake and meek repeatedly logged `Not using bridge ... it is in ExcludeNodes` while Foreign-only mode was enabled.
+   - RC2 changes the policy to `GeoIPExcludeUnknown 0` plus explicit `ExcludeExitNodes {ir},{??}`, so unknown-country entry bridges are not globally excluded while Iran/unknown exits remain excluded.
 
-The old candidate depended on one hard-coded Snowflake bridge definition even though the same official Tor Expert Bundle shipped a maintained `pt_config.json` containing multiple bridge families.
+2. `REAL_MAC_AUTO_CATALOG_TRUNCATION`
+   - RC1 stopped after five attempts: 2 Snowflake + 1 meek + only 2 obfs4, despite 7 packaged obfs4 candidates.
+   - RC2 defaults `MAX_AUTO_ATTEMPTS` to `0`, meaning exhaust the finite packaged catalog. A positive explicit override can still bound attempts.
 
-V5 therefore removes the single hard-coded transport dependency and makes the exact packaged Tor bundle the source of truth for the runtime bridge catalog.
+3. `REAL_MAC_PHASE_AWARE_BOOTSTRAP_STALL`
+   - RC1 killed an obfs4 route after it reached 30% (`Loading networkstatus consensus`) and then showed no percentage change for 90 seconds.
+   - RC2 uses phase-aware default no-progress limits: 90s initial, 150s after >=10%, 240s from >=25%. The explicit `DEVFIX_TUNNEL_STALL_TIMEOUT` override remains available for deterministic tests.
 
-## Final official CI gate
+RC1 must not be promoted to stable.
+
+## Official RC2 CI gate
 
 Workflow: `DevFix Tunnel CI`
 
-Run ID: `31941348516`
+Run ID: `31964265658`
 
-Head SHA: `e896afaacc3f3d241577a6614a6e5140166f4536`
+Head SHA: `1e56a6006be661dd1b4d743dd4aa98992c1e22a3`
 
 Result: **PASS**
 
 Validated classes include:
 
-- shell syntax: PASS
-- ShellCheck without suppressing new findings: PASS
-- V5 transport fixture/integration matrix: PASS
-- two failed Snowflake candidates followed by successful meek fallback: PASS
-- Snowflake WebRTC failure classification: PASS
-- per-attempt transport logging: PASS
-- fresh attempt state/data isolation: PASS
-- Foreign-only torrc policy: PASS
-- Iran/unknown exit exclusion configuration: PASS
-- preferred exit-country validation: PASS
-- `devfix-tunnel exit` fixture verification: PASS
-- `devfix-tunnel run` child-only proxy environment: PASS
-- System Proxy fail-closed activation: PASS
-- same-mode connect idempotency: PASS
-- cross-mode transition refusal: PASS
-- restart mode preservation: PASS
-- existing SOCKS/HTTP/PAC conflict preservation: PASS
-- disabled authenticated SOCKS preservation: PASS
-- Tor-process death restoration: PASS
-- external proxy ownership-loss non-destruction: PASS
-- active network-service change restoration: PASS
-- guardian root/user marker privilege boundary: PASS
-- Selective Chrome exact SOCKS proxy flag: PASS
-- Selective Chrome isolated profile: PASS
-- Selective Chrome DNS resolver isolation flag: PASS
-- Selective Chrome WebRTC non-proxied-UDP restriction: PASS
-- Selective Chrome reuses only compatible healthy routes: PASS
-- Selective Chrome refuses degraded routes: PASS
-- Selective Chrome refuses incompatible exit policy/country: PASS
-- Selective Chrome forwards explicit transport/exit options: PASS
-- Selective Chrome rejects Foreign-only + Iran conflict: PASS
-- Intel macOS command contract: PASS
-- full Tunnel fixture tests on Intel macOS runner: PASS
-- Selective Chrome tests on Intel macOS runner: PASS
-- inherited stable DevFix regression on Ubuntu: PASS
-- inherited stable DevFix regression on Intel macOS: PASS
+- syntax: PASS
+- ShellCheck without suppressing findings: PASS
+- original System Proxy/guardian/restore/conflict suite: PASS
+- V5 Snowflake-to-meek fallback fixture: PASS
+- exit-policy/GeoIP fixture suite: PASS
+- process-scoped `run` suite: PASS
+- Selective Chrome suite: PASS
+- RC2 physical-failure regression: PASS on Ubuntu
+- RC2 physical-failure regression: PASS on Intel macOS
+- regression proves auto mode reaches attempt 6 / obfs4 candidate 3 after five prior failures: PASS
+- regression proves `GeoIPExcludeUnknown 0` + `ExcludeExitNodes {ir},{??}`: PASS
+- regression proves phase-aware stall policy is present: PASS
+- inherited stable DevFix regression: PASS on Ubuntu
+- inherited stable DevFix regression: PASS on Intel macOS
 
-## Final official package gate
+## Official RC2 package gate
 
 Workflow: `DevFix Tunnel Package`
 
-Run ID: `31941348518`
+Run ID: `31964265651`
 
-Head SHA: `e896afaacc3f3d241577a6614a6e5140166f4536`
+Head SHA: `1e56a6006be661dd1b4d743dd4aa98992c1e22a3`
 
 Result: **PASS**
 
 Validated stages include:
 
-- official Tor Expert Bundle acquisition/checksum verification: PASS
-- Tor-core-aligned official GeoIP/GeoIPv6 source acquisition/checksum verification: PASS
-- bundle-native runtime catalog generation: PASS
-- catalog contains >=2 Snowflake, >=1 meek, >=1 obfs4: PASS
-- real packaged Tor `--verify-config` for Snowflake + GeoIP + Foreign-only + preferred exit: PASS
-- real packaged Tor `--verify-config` for meek + GeoIP + Foreign-only + preferred exit: PASS
-- real packaged Tor `--verify-config` for obfs4 + GeoIP + Foreign-only + preferred exit: PASS
 - portable archive build: PASS
-- macOS x86_64 `.pkg` build: PASS
-- artifact hashing: PASS
-- package installation smoke test on Intel macOS runner: PASS
-- strict fail-closed postinstall recovery path: PASS
-- installed `devfix-tunnel` version check: PASS
-- installed `devfix-tunnel-chrome` existence/syntax check: PASS
-- installed guardian check: PASS
-- installed Tor/lyrebird checks: PASS
-- installed GeoIP/GeoIPv6 checks: PASS
-- installed runtime catalog checks: PASS
-- installed recovery LaunchDaemon check: PASS
-- installed `devfix-tunnel doctor`: PASS
-- real Tor config parser run again against installed package: PASS
-- stable DevFix source preservation at `2.0.4`: PASS
+- bundle-native transport catalog generation: PASS
+- catalog minimums: Snowflake >=2, meek >=1, obfs4 >=7: PASS
+- real packaged Tor parser accepts Snowflake + RC2 GeoIP/exit policy: PASS
+- real packaged Tor parser accepts meek + RC2 GeoIP/exit policy: PASS
+- real packaged Tor parser accepts obfs4 + RC2 GeoIP/exit policy: PASS
+- macOS Intel `.pkg` build: PASS
+- package install smoke test on Intel macOS runner: PASS
+- installed version `0.3.0-rc2`: PASS
+- installed Selective Chrome launcher: PASS
+- installed Tor/lyrebird/GeoIP/catalog/recovery daemon: PASS
+- installed `doctor`: PASS
+- real Tor parser run again against installed package: PASS
+- stable DevFix `2.0.4` source preservation: PASS
 - artifact upload: PASS
 
-## Locked V5 artifact identity
+## Locked RC2 artifact
 
 GitHub Actions artifact ID:
 
-`9262108863`
+`9268053298`
 
 Artifact name:
 
-`DevFixTunnel-0.3.0-rc1-macos-x86_64`
+`DevFixTunnel-0.3.0-rc2-macos-x86_64`
 
 GitHub artifact digest / independently downloaded ZIP SHA-256:
 
-`0e4c9d6d3db77b8110deaeec18b98a9efde3f5e97e471c9ec83963b209bd562f`
+`cd82d3f35cb29ca939ad7e3646f6fd9aaee859299c13537852f284854ac3396e`
 
 Contained files and independently verified SHA-256 values:
 
-- `DevFixTunnel-0.3.0-rc1-macos-x86_64.pkg`
-  - SHA-256: `4a88daa4eb75ee7c19505e60938683a735830d78072d97d16ce3db91c397f537`
-- `DevFixTunnel-0.3.0-rc1-macos-x86_64.tar.gz`
-  - SHA-256: `5c37e685d96bb8e4f1d4b6294a63792cf96fbef5199e888010d89b708edd9a4f`
+- `DevFixTunnel-0.3.0-rc2-macos-x86_64.pkg`
+  - `3844d5536013dfe0ff64cd8979a7430bca443a6e10a876c9c8c7462a2567dbe8`
+- `DevFixTunnel-0.3.0-rc2-macos-x86_64.tar.gz`
+  - `ca7855dbae9c1535aeb9af0d3025f20c222807e69bc1b791f5b543cf87d90b78`
 - `SHA256SUMS.txt`
-  - SHA-256: `239fa0c63e0985e34786fdd72de1658dc276d3d2719a4b2ee1b5a02889a3dcbf`
+  - `8314a32d1381b8808647002cfcb2c24026bd9f81cdce32c2914b2f7207087785`
 
-Independent `SHA256SUMS.txt` verification against the downloaded artifact contents: **PASS**.
+Independent `shasum -a 256 -c SHA256SUMS.txt`: **PASS** for both `.pkg` and `.tar.gz`.
 
-## Independent artifact content audit
+## Independent artifact-content audit
 
-The final downloaded artifact was independently inspected after the official workflows passed.
+The downloaded artifact was unpacked independently after both official workflows passed. Confirmed inside the delivered RC2 bytes:
 
-Confirmed inside the delivered V5 bytes:
+- `TUNNEL_VERSION="0.3.0-rc2"`
+- `GeoIPExcludeUnknown 0`
+- `ExcludeExitNodes {ir},{??}`
+- `MAX_AUTO_ATTEMPTS` default `0`
+- handshake-stage stall default `150`
+- consensus-stage stall default `240`
+- transport catalog counts: Snowflake `2`, meek `1`, obfs4 `7`
+- Tor GeoIP + GeoIPv6 files
+- Selective Chrome SOCKS/DNS/WebRTC controls
 
-- product version `0.3.0-rc1`;
-- current Tor Expert Bundle runtime;
-- transport catalog generated from the exact bundled `pt_config.json`;
-- catalog counts: Snowflake `2`, meek `1`, obfs4 `7`;
-- old runtime `DEFAULT_SNOWFLAKE_BRIDGE` hard-coded source is absent;
-- Tor GeoIP and GeoIPv6 databases are present;
-- Tor GeoIP source metadata is present;
-- Tor core version for aligned GeoIP source: `0.4.9.11`;
-- official Tor source SHA-256 used for GeoIP extraction: `2e6c1720118c812acf0079fd47cf91b6bfaba5d766c321c4d3d2a28d6a11a8ed`;
-- Foreign-only configuration support is present;
-- `devfix-tunnel exit` is present;
-- `devfix-tunnel run` is present;
-- Selective Chrome launcher is present;
-- Selective Chrome dedicated profile/proxy/DNS/WebRTC controls are present;
-- upgrade recovery is fail-closed;
-- stable DevFix remains independently versioned and untouched.
+## Safety result from the failed physical RC1 run
 
-## V5 transport behavior
-
-Default connection policy:
-
-```text
-transport = auto
-exit policy = foreign-only
-```
-
-Bounded transport order starts with the current bundle-native candidates:
-
-```text
-Snowflake candidate 1
-→ Snowflake candidate 2
-→ meek_lite candidate 1
-→ bounded obfs4 candidates
-```
-
-Each candidate receives:
-
-- a fresh Tor process;
-- a fresh attempt-specific Tor data directory;
-- its own attempt log;
-- bounded bootstrap/stall handling.
-
-A failed candidate is stopped before fallback continues.
-
-**macOS System Proxy is not enabled until one candidate reaches Tor bootstrap 100% and routed HTTPS validation succeeds.**
-
-## Exit policy
-
-Default V5 torrc policy includes:
-
-```text
-GeoIPExcludeUnknown 1
-ExcludeExitNodes {ir},{??}
-```
-
-A preferred country may be requested with:
-
-```bash
-devfix-tunnel connect --exit-country de
-```
-
-The product does not claim a commercial/residential/static IP. Tor path selection and live relay availability still apply, so the live route should be verified with:
-
-```bash
-devfix-tunnel exit
-```
-
-## Application coverage
-
-### System Proxy
-
-`devfix-tunnel connect system` targets Safari, Chrome, VS Code/Electron, and other software that honors macOS System Proxy.
-
-### Selective Chrome
-
-`devfix-tunnel-chrome` creates/reuses a validated SOCKS-only route and launches a dedicated Chrome/Chromium profile through it while leaving the ordinary Chrome profile and macOS System Proxy unchanged.
-
-The selective process receives:
-
-```text
---proxy-server=socks5://127.0.0.1:<port>
---host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1
---force-webrtc-ip-handling-policy=disable_non_proxied_udp
-```
-
-This is Chrome over the Tunnel, not Tor Browser and not a claim of Tor Browser anti-fingerprinting.
-
-### Process-scoped CLI
-
-`devfix-tunnel run <command> [args...]` sets `ALL_PROXY`/`all_proxy` only for the child process. It does not edit shell startup files or globally proxy the user's shell.
+Even though every RC1 transport failed on the real Mac, macOS System Proxy remained disabled. This confirms the fail-closed activation boundary behaved correctly in that failure scenario.
 
 ## Product boundary
 
-`0.3.0-rc1` is **not** a packet-level full-device VPN.
+`0.3.0-rc2` is still not represented as a packet-level full-device VPN. It provides validated Tor/SOCKS routing, safe macOS System Proxy mode, Selective Chrome, and process-scoped CLI routing. A true full-device VPN remains a separate NetworkExtension milestone.
 
-A true full-device macOS implementation remains a separate NetworkExtension / `NEPacketTunnelProvider` milestone requiring a packet-forwarding engine, DNS/IPv4/IPv6 handling, Apple Network Extension entitlement, signing/provisioning, and physical target acceptance.
+## Remaining release gate
 
-V5 is intentionally useful now as:
+Only `REAL_TARGET_MAC_ACCEPTANCE_RC2` remains before considering stable `0.3.0`.
 
-- safe macOS System Proxy circumvention;
-- split/selective tunneled Chrome;
-- process-scoped CLI routing.
+The next physical run should focus first on the exact failure path just remediated: install the locked RC2 package, verify identity/version/doctor, run `auto`, and confirm whether a validated Tor route reaches 100%. Browser/crash/reboot acceptance should follow only after the route itself succeeds.
 
-## Network-outage boundary
-
-Multi-transport fallback can improve resilience against censorship, blocked endpoints, restrictive NAT/firewalls, and individual transport failure. It cannot manufacture an external path when the underlying network has zero reachable route to every outside bridge/rendezvous/relay/server.
-
-## Closed engineering failure classes
-
-The following classes were found, root-caused, fixed or correctly bounded, documented, and revalidated where product changes were applicable:
-
-1. `SYSTEM_PROXY_NOT_IMPLEMENTED`
-2. `CRASH_CAN_STRAND_PROXY`
-3. `PROXY_OWNERSHIP_CONFLICT`
-4. `NETWORK_SERVICE_HARDCODING`
-5. `SHARED_RUNTIME_COUPLING`
-6. `NO_INSTALLER_OR_RECOVERY_DAEMON`
-7. `NO_CONFLICT_TEST_MATRIX`
-8. `NO_RELEASE_ARTIFACT`
-9. `SHELLCHECK_SC2015`
-10. `WORKFLOW_YAML_PARSE`
-11. `REMEDIATION_PATCH_SYNTAX`
-12. `CI_RETRIGGER_SUPPRESSED_BY_GITHUB_TOKEN`
-13. `MODE_TRANSITION_NOT_IDEMPOTENT`
-14. `RESTART_MODE_DRIFT`
-15. `ROOT_USER_STATE_TOCTOU`
-16. `DISABLED_AUTHENTICATED_SOCKS_CONFIG`
-17. `RESTORE_VERIFICATION_TOO_WEAK`
-18. `TEST_STATIC_PATTERN_SC2016`
-19. `GITHUB_WORKFLOW_WRITE_PERMISSION`
-20. `ARTIFACT_FILE_NOT_FOUND_ACCEPTANCE_CLASSIFICATION`
-21. `REAL_SNOWFLAKE_BOOTSTRAP_STALL_10`
-22. `SNOWFLAKE_WEBRTC_DATACHANNEL_FAILURE` — addressed by bundle-native bounded multi-transport fallback; physical V5 retest still required
-23. `V5_BUILD_SCRIPT_EXEC_BIT`
-24. `V5_SHELLCHECK_SC2015_SC2086_SC2016`
-25. `SELECTIVE_CHROME_PORT_CAPTURE_STDOUT`
-26. `SELECTIVE_CHROME_HEALTH_SHELLCHECK`
-27. `UPGRADE_RECOVERY_FAIL_OPEN`
-
-No product security check, restore ownership check, failure classifier, or test was disabled to obtain green CI.
-
-## Only remaining release gate
-
-The only remaining gate before proposing stable `0.3.0` is:
-
-`REAL_TARGET_MAC_ACCEPTANCE_V5`
-
-It must run on the actual Intel x86_64 macOS Monterey 12.7.6 target because CI cannot certify the user's live Iranian network, real bridge reachability, actual current System Proxy state, browser behavior, or physical reboot/orphan recovery.
-
-Mandatory real-target classes:
-
-- exact V5 `.pkg` hash verification;
-- safe upgrade from installed `0.2.0-rc1`/current state;
-- V5 `doctor` including catalog + GeoIP;
-- real `auto` transport fallback behavior;
-- real Tor bootstrap 100% + HTTPS route validation;
-- live Foreign-only exit verification;
-- System Proxy apply/readback;
-- Safari HTTPS;
-- normal Chrome HTTPS in System mode;
-- System Proxy disconnect restoration;
-- Selective Chrome split-routing test with ordinary Chrome left direct;
-- representative process-scoped CLI test;
-- Tor-process death restoration in System mode;
-- network-service-change restoration when practical;
-- reboot/orphan restoration;
-- final safe proxy state.
-
-Until those physical target classes pass, correct label is `0.3.0-rc1`, not stable `0.3.0`.
+Until physical RC2 acceptance passes, the correct release label remains `0.3.0-rc2`, not stable `0.3.0`.
