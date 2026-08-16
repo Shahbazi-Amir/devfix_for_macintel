@@ -8,16 +8,17 @@ Expected package SHA-256:
 
 ## Purpose
 
-This run validates only the route gate remediated from the physical RC2 failure. Do not perform browser/crash/reboot tests until route bootstrap reaches 100% and routed HTTPS validation passes.
+This run validates only the route gate remediated from the physical RC2 failure. It intentionally uses **SOCKS-only mode** so macOS System Proxy is not changed while transport/bootstrap behavior is under investigation. Do not perform browser/System-Proxy/crash/reboot tests until route bootstrap reaches 100% and routed HTTPS validation passes.
 
 RC3 changes under physical validation:
 
-- persistent Tor directory CacheDirectory across fallback and later sessions;
-- fresh per-attempt DataDirectory remains isolated/disposable;
+- persistent Tor directory `CacheDirectory` across fallback and later sessions;
+- fresh per-attempt `DataDirectory` remains isolated/disposable;
+- normal Tor cache writes are enabled (`AvoidDiskWrites 0`);
 - early transport failures remain bounded;
 - >=40% directory/descriptors phase receives up to 900 seconds without percentage progress;
 - total candidate ceiling is 1200 seconds;
-- System Proxy is still not enabled before 100% + HTTPS validation.
+- System Proxy activation remains gated behind a separate later acceptance phase.
 
 ## Required observations
 
@@ -27,11 +28,12 @@ RC3 changes under physical validation:
 4. Verify `DevFix Tunnel 0.3.0-rc3` and doctor.
 5. Confirm directory cache is reported.
 6. Capture `scutil --proxy` before connect.
-7. Run default `devfix-tunnel connect` with no timeout overrides.
+7. Run `devfix-tunnel connect socks` with no timeout/cache overrides.
 8. Do not interrupt 40/45/50% merely because it remains unchanged for several minutes; RC3 intentionally permits up to 900 seconds of no-progress in this phase.
-9. If route succeeds, capture status, exit identity and system proxy.
-10. If route fails, capture status, system proxy, doctor and 600 lines of Tunnel logs.
+9. If route succeeds, capture `status`, `exit`, and confirm `scutil --proxy` is still unchanged because this phase is SOCKS-only.
+10. If route fails, capture `status`, `scutil --proxy`, `doctor`, and 600 lines of Tunnel logs.
 11. A failed route must leave System Proxy unchanged/non-tunnel-owned.
+12. Only after this route gate passes should a separate System Proxy/browser/recovery acceptance be run.
 
 ## Failure loop
 
