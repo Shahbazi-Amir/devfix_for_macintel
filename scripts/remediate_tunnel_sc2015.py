@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from pathlib import Path
-import re
 
 
 def replace_once(path: str, old: str, new: str, label: str) -> None:
@@ -32,28 +31,88 @@ replace_once(
     "cli doctor route",
 )
 
-guardian = "tunnel/libexec/devfix-tunnel-guardian"
-p = Path(guardian)
-text = p.read_text()
-pattern = re.compile(
-    r'''\[ -f "\$CURRENT_FILE" \] \|\| \{ \[ -n "\$marker_user_state" \] && safe_user_marker "\$marker_user_state" "system-proxy\.restored" "SESSION=\$\{requested_session:-none\}\nRESULT=NO_OWNED_PROXY" "\$marker_uid" "\$marker_gid" \|\| true; return 0; \};'''
-)
-replacement = (
-    'if [ ! -f "$CURRENT_FILE" ]; then\n'
-    '    if [ -n "$marker_user_state" ]; then\n'
-    '      safe_user_marker "$marker_user_state" "system-proxy.restored" '
-    '"SESSION=${requested_session:-none}\\nRESULT=NO_OWNED_PROXY" '
-    '"$marker_uid" "$marker_gid" || true\n'
-    '    fi\n'
-    '    return 0\n'
-    '  fi'
-)
-text2, n = pattern.subn(lambda _: replacement, text, count=1)
-if n != 1:
-    raise SystemExit(f"guardian recover no-current: expected 1 match, found {n}")
-p.write_text(text2)
+guardian_path = Path("tunnel/libexec/devfix-tunnel-guardian")
+guardian = guardian_path.read_text()
+start = guardian.find("recover_owned_proxy() {")
+end = guardian.find("\nguardian_monitor() {", start)
+if start < 0 or end < 0:
+    raise SystemExit("guardian recover_owned_proxy function boundaries not found")
+patched_recover = '''recover_owned_proxy() {
+  requested_session="${1:-}"
+  marker_user_state="${2:-}"
+  marker_uid="${3:-}"
+  marker_gid="${4:-}"
+
+  if [ ! -f "$CURRENT_FILE" ]; then
+    if [ -n "$marker_user_state" ]; then
+      safe_user_marker "$marker_user_state" "system-proxy.restored" "SESSION=${requested_session:-none}
+RESULT=NO_OWNED_PROXY" "$marker_uid" "$marker_gid" || true
+    fi
+    return 0
+  fi
+
+  session=$(owner_get SESSION '')
+  phase=$(owner_get PHASE '')
+  service=$(owner_get SERVICE '')
+  port=$(owner_get PORT '')
+  user_state=$(owner_get USER_STATE "$marker_user_state")
+  uid=$(owner_get UID "$marker_uid")
+  gid=$(owner_get GID "$marker_gid")
+  snapshot=$(owner_get SNAPSHOT '')
+
+  if [ -n "$requested_session" ] && [ "$session" != "$requested_session" ]; then
+    log_line "recover_refused requested=$requested_session owned=$session reason=SESSION_MISMATCH"
+    return 2
+  fi
+
+  case "$phase" in
+    SNAPSHOTTED)
+      rm -f "$CURRENT_FILE"
+      [ -d "$snapshot" ] && rm -rf "$snapshot"
+      safe_user_marker "$user_state" "system-proxy.restored" "SESSION=$session
+RESULT=SNAPSHOT_ONLY_CLEARED" "$uid" "$gid" || true
+      return 0
+      ;;
+    APPLIED)
+      if proxy_matches_owned "$service" "$port"; then
+        if restore_snapshot "$service" "$snapshot"; then
+          clear_owner_after_restore "$snapshot"
+          safe_user_marker "$user_state" "system-proxy.restored" "SESSION=$session
+SERVICE=$service
+RESULT=RESTORED" "$uid" "$gid" || true
+          rm -f "$user_state/run/system-proxy.ready" 2>/dev/null || true
+          log_line "session=$session restore=success service=$service"
+          return 0
+        fi
+        safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=RESTORE_COMMAND_FAILED" "$uid" "$gid" || true
+        log_line "session=$session restore=failed reason=RESTORE_COMMAND_FAILED"
+        return 1
+      fi
+
+      write_owner "$session" CONFLICT "$service" "$port" "$user_state" "$uid" "$gid" "$snapshot" "$(owner_get GUARDIAN_PID '')"
+      safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=PROXY_OWNERSHIP_LOST" "$uid" "$gid" || true
+      log_line "session=$session restore=refused reason=PROXY_OWNERSHIP_LOST"
+      return 3
+      ;;
+    CONFLICT)
+      safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=PROXY_OWNERSHIP_CONFLICT_REQUIRES_MANUAL_REVIEW" "$uid" "$gid" || true
+      return 3
+      ;;
+    *)
+      log_line "recover_refused session=$session unknown_phase=$phase"
+      return 4
+      ;;
+  esac
+}
+'''
+guardian = guardian[:start] + patched_recover + guardian[end:]
+guardian_path.write_text(guardian)
+
 replace_once(
-    guardian,
+    str(guardian_path),
     '[ -n "$user_state" ] && [ -n "$session" ] && [ -n "$tor_pid" ] && [ -n "$port" ] || die "apply requires user-state/session/tor-pid/port";',
     'if [ -z "$user_state" ] || [ -z "$session" ] || [ -z "$tor_pid" ] || [ -z "$port" ]; then\n    die "apply requires user-state/session/tor-pid/port"\n  fi',
     "guardian required apply args",
@@ -79,20 +138,17 @@ replace_once(
     "uninstall logs purge",
 )
 
-Path("docs/tunnel/remediations").mkdir(parents=True, exist_ok=True)
-Path("docs/tunnel/remediations/001_SHELLCHECK_SC2015.md").write_text(
+rem = Path("docs/tunnel/remediations")
+rem.mkdir(parents=True, exist_ok=True)
+(rem / "001_SHELLCHECK_SC2015.md").write_text(
     "# Remediation 001 — SHELLCHECK_SC2015\n\n"
-    "## Failure\n\n"
-    "CI run `31936598799` failed the Tunnel ShellCheck gate on `SC2015`.\n\n"
-    "## Root cause\n\n"
-    "Several compact shell expressions used `A && B || C`, which is ambiguous control flow because C can execute if B fails even when A succeeds.\n\n"
-    "## Fix\n\n"
-    "All flagged sites are converted to explicit fail-closed `if/then/else` control flow. No test, ownership rule, restore rule, conflict rule, or security gate is weakened.\n\n"
-    "## Validation\n\n"
-    "Syntax, ShellCheck, unchanged Tunnel integration tests, Intel macOS command-contract tests, inherited DevFix regression, and packaging must all pass before this failure class is closed.\n"
+    "CI run `31936598799` failed on `SC2015`. Compact `A && B || C` control flow was replaced with explicit fail-closed conditionals. Tests and safety rules were not weakened. Closure requires green post-fix CI.\n"
 )
-
-Path("docs/tunnel/remediations/002_WORKFLOW_YAML_PARSE.md").write_text(
+(rem / "002_WORKFLOW_YAML_PARSE.md").write_text(
     "# Remediation 002 — WORKFLOW_YAML_PARSE\n\n"
-    "The first one-shot remediation workflow produced no jobs because multiline Python content escaped the YAML block indentation. The strategy was changed: remediation logic now lives in `scripts/remediate_tunnel_sc2015.py`, and YAML only invokes the script. No product code or tests were weakened to work around the workflow failure.\n"
+    "The first one-shot remediation workflow escaped YAML indentation because multiline Python was embedded directly in the workflow. The strategy changed to a standalone Python remediation script.\n"
+)
+(rem / "003_REMEDIATION_PATCH_SYNTAX.md").write_text(
+    "# Remediation 003 — REMEDIATION_PATCH_SYNTAX\n\n"
+    "Run `31936994080` showed that substring rewriting of a compact one-line shell function produced invalid shell syntax after `fi`. The strategy changed again: the complete `recover_owned_proxy` function is replaced atomically by the already locally syntax/integration-tested multiline implementation. No product test was suppressed.\n"
 )
