@@ -44,11 +44,21 @@ Downloaded GitHub Actions ZIP SHA-256:
 
 `c20de89185b9bf79b86cea444a266da5d01b7f27ce35f044bd930c326aaa8c1b`
 
-If the `.pkg` hash differs:
+Artifact preflight must distinguish these conditions:
+
+1. If the `.pkg` file does not exist at the resolved local path:
+
+`STOP — ARTIFACT_FILE_NOT_FOUND`
+
+Do not calculate an empty hash and do not classify this as an identity mismatch. Locate/download the exact package first, then restart artifact verification.
+
+2. If the `.pkg` exists but its SHA-256 differs:
 
 `STOP — ARTIFACT_IDENTITY_FAILURE`
 
 Do not install or continue.
+
+3. Only if the file exists and the SHA-256 matches exactly may installation continue.
 
 ## Safety preflight
 
@@ -68,26 +78,27 @@ Do not remove unrelated network configuration merely to obtain a PASS.
 
 ## Phase A — install + ordinary connection
 
-1. Verify exact package SHA-256.
-2. Install the `.pkg` with the normal macOS installer command/UI.
-3. Require `devfix-tunnel version` = `0.2.0-rc1`.
-4. Require `devfix-tunnel doctor` PASS.
-5. Save a pre-connect `scutil --proxy` snapshot.
-6. Run `devfix-tunnel connect` and approve the normal administrator authorization request.
-7. Require real Snowflake bootstrap to reach 100%.
-8. Require routed HTTPS validation to pass.
-9. Require status:
+1. Resolve the actual local `.pkg` path and require the file to exist.
+2. Verify exact package SHA-256.
+3. Install the `.pkg` with the normal macOS installer command/UI.
+4. Require `devfix-tunnel version` = `0.2.0-rc1`.
+5. Require `devfix-tunnel doctor` PASS.
+6. Save a pre-connect `scutil --proxy` snapshot.
+7. Run `devfix-tunnel connect` and approve the normal administrator authorization request.
+8. Require real Snowflake bootstrap to reach 100%.
+9. Require routed HTTPS validation to pass.
+10. Require status:
    - `State: CONNECTED`
    - `Mode: SYSTEM_PROXY`
    - `Health: OK`
-10. Record connected `scutil --proxy` and confirm localhost SOCKS is active for the chosen macOS network service.
-11. Run `devfix-tunnel connect` a second time. It must be idempotent and keep the same session instead of creating a new transport/guardian.
-12. `devfix-tunnel open https://check.torproject.org/`
-13. Confirm Safari can browse HTTPS through the route.
-14. Confirm Chrome can browse at least one normal HTTPS page through the route.
-15. Run `devfix-tunnel disconnect`.
-16. Save post-disconnect `scutil --proxy`.
-17. Require previous System Proxy state to match the recorded pre-connect state for fields DevFix Tunnel modified.
+11. Record connected `scutil --proxy` and confirm localhost SOCKS is active for the chosen macOS network service.
+12. Run `devfix-tunnel connect` a second time. It must be idempotent and keep the same session instead of creating a new transport/guardian.
+13. `devfix-tunnel open https://check.torproject.org/`
+14. Confirm Safari can browse HTTPS through the route.
+15. Confirm Chrome can browse at least one normal HTTPS page through the route.
+16. Run `devfix-tunnel disconnect`.
+17. Save post-disconnect `scutil --proxy`.
+18. Require previous System Proxy state to match the recorded pre-connect state for fields DevFix Tunnel modified.
 
 ## Phase B — Tor process death recovery
 
@@ -134,11 +145,13 @@ For any failure:
 
 1. Do not repeat blindly.
 2. Preserve exact terminal output.
-3. Run `devfix-tunnel logs 200`.
-4. Record before/after `scutil --proxy` when relevant.
-5. Assign one failure class.
-6. Classify layer:
-   - artifact/install
+3. For pre-install artifact failures, first distinguish `ARTIFACT_FILE_NOT_FOUND` from `ARTIFACT_IDENTITY_FAILURE`; `devfix-tunnel` logs do not yet exist before installation.
+4. Once installed, run `devfix-tunnel logs 200` for product/runtime failures.
+5. Record before/after `scutil --proxy` when relevant.
+6. Assign one failure class.
+7. Classify layer:
+   - artifact file discovery
+   - artifact identity/install
    - independent runtime
    - Snowflake bootstrap
    - routed validation
@@ -150,10 +163,10 @@ For any failure:
    - restoration
    - browser behavior
    - reboot/orphan recovery
-7. Create a remediation note/prompt on `feature/devfix-tunnel`.
-8. Fix root cause only on the Tunnel branch.
-9. If product/package bytes change, rerun official CI + package workflows and create a new exact artifact identity before retesting the Mac.
-10. Re-run the failed real-Mac class plus any earlier regression-critical classes affected by the change.
+8. Create a remediation note/prompt on `feature/devfix-tunnel`.
+9. Fix root cause only on the Tunnel branch.
+10. If product/package bytes change, rerun official CI + package workflows and create a new exact artifact identity before retesting the Mac.
+11. Re-run the failed real-Mac class plus any earlier regression-critical classes affected by the change.
 
 ## Stable promotion gate
 
@@ -187,6 +200,7 @@ Never:
 
 Report every item as PASS / FAIL / NOT RUN:
 
+- local package file discovery
 - package SHA identity
 - package install
 - version
