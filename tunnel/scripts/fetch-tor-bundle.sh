@@ -61,6 +61,6 @@ SHA256: $actual
 Manifest: $BASE/sha256sums-signed-build.txt
 EOF
 
-"$ROOT/tunnel/scripts/fetch-geoip.sh" "$DEST"
+/bin/bash "$ROOT/tunnel/scripts/fetch-geoip.sh" "$DEST"
 
 echo "Verified DevFix Tunnel Tor bundle: $actual"
