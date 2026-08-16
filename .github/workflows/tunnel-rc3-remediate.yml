@@ -39,4 +39,4 @@ jobs:
           git commit -m "fix(tunnel): preserve directory cache across fallback"
           git push origin HEAD:feature/devfix-tunnel
 
-# rerun after persistent-cache redesign
+# rerun after shellcheck-clean RC3 cache regression
