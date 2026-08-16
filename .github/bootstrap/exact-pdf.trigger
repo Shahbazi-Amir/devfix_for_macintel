@@ -1,1 +1,0 @@
-restore-exact-qaed-pdf
