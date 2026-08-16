@@ -203,6 +203,7 @@ Before physical-Mac retesting, the exact product SHA must pass:
 
 - syntax and ShellCheck without suppressing new findings;
 - V5 multi-transport fallback tests;
+- RC2 physical-failure regressions for bridge eligibility, full-catalog fallback, and phase-aware stall policy;
 - exit-policy/GeoIP tests;
 - process-scoped `run` tests;
 - selective Chrome command/flag/profile tests;
