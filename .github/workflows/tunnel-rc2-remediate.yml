@@ -36,7 +36,7 @@ jobs:
         run: |
           git config user.name "Amir Shahbazi"
           git config user.email "36712410+Shahbazi-Amir@users.noreply.github.com"
-          git add tunnel tests .github/workflows/tunnel-package.yml docs/tunnel/remediations
+          git add tunnel tests docs/tunnel/remediations
           git diff --cached --check
           git commit -m "fix(tunnel): harden rc2 bridge policy and fallback"
           git push origin HEAD:feature/devfix-tunnel
