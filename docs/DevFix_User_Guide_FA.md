@@ -1,8 +1,10 @@
 # راهنمای استفاده از DevFix روی Mac Intel
 
-این راهنما برای استفاده‌ی روزمره از DevFix است تا روش صحیح استفاده، اتصال Snowflake، Homebrew، `gh`، Git، `curl` و ابزارهای نصب مستقیم فراموش نشود.
+این فایل برای استفاده‌ی روزمره از DevFix ساخته شده تا لازم نباشد هر بار روش صحیح استفاده را به خاطر بیاوری.
 
-## وضعیت مبنا هنگام تهیه این راهنما
+## وضعیت فعلی سیستم
+
+در زمان تهیه‌ی این راهنما:
 
 ```text
 Mac: Intel x86_64
@@ -10,18 +12,22 @@ macOS: Monterey 12.7.6
 DevFix: 2.0.4
 Homebrew: 6.0.13
 Homebrew Portable Ruby: 4.0.6
-GitHub CLI (gh): 2.97.0 — Direct install
-FFmpeg: 9.0.1-tessus — Direct install
-FFprobe: 9.0.1-tessus — Direct install
+GitHub CLI (gh): 2.97.0 — نصب مستقیم در /usr/local/bin/gh
+FFmpeg: 9.0.1-tessus — نصب مستقیم در /usr/local/bin/ffmpeg
+FFprobe: 9.0.1-tessus — نصب مستقیم در /usr/local/bin/ffprobe
 ```
 
-`gh` با OAuth به GitHub لاگین شده و Credential آن در Keychain مک ذخیره شده است. FFmpeg/FFprobe با تست واقعی encode/probe تأیید شده‌اند.
+`gh` به GitHub لاگین شده و Credential آن در Keychain مک ذخیره شده است.
+
+FFmpeg و FFprobe هم با تست واقعی encode/probe تأیید شده‌اند.
 
 ---
 
-## DevFix دقیقاً چیست؟
+# DevFix دقیقاً چیست؟
 
-DevFix یک VPN سراسری برای کل مک نیست. DevFix برای ترافیک ابزارهای توسعه ساخته شده است؛ مانند:
+DevFix یک VPN سراسری برای کل مک نیست.
+
+DevFix برای ترافیک ابزارهای توسعه ساخته شده است، مثل:
 
 ```text
 Homebrew
@@ -30,54 +36,114 @@ curl
 GitHub CLI
 npm
 Ruby installers
-هر CLI که با devfix run اجرا شود
+و هر CLI دیگری که با devfix run اجرا شود
 ```
 
 DevFix در صورت نیاز Tor + Snowflake را بالا می‌آورد و یک مسیر SOCKS محلی ایجاد می‌کند.
 
-به‌صورت خودکار Safari، Chrome، Firefox، تمام برنامه‌های مک یا تمام ترافیک سیستم را از تونل عبور نمی‌دهد.
+## DevFix چه کاری نمی‌کند؟
+
+به‌صورت خودکار این‌ها را از تونل عبور نمی‌دهد:
+
+```text
+Safari
+Chrome
+Firefox
+تمام برنامه‌های مک
+تمام ترافیک سیستم
+```
+
+یعنی روشن بودن DevFix به معنی «VPN کل سیستم» نیست.
 
 ---
 
-## قانون ساده‌ی روزمره
+# قانون ساده‌ی روزمره
 
-اگر اینترنت مستقیم کار می‌کند، DevFix لازم نیست. ابتدا ابزار را مستقیم امتحان کن.
+## اگر اینترنت مستقیم کار می‌کند
 
-اگر Homebrew، GitHub، GHCR یا دانلود Developer گیر کرد:
+هیچ کاری لازم نیست.
+
+مثلاً:
+
+```bash
+gh auth status
+git pull
+curl https://github.com
+```
+
+را می‌توان اول مستقیم امتحان کرد.
+
+## اگر Homebrew، GitHub، GHCR یا دانلود Developer گیر کرد
+
+DevFix را وصل کن:
 
 ```bash
 devfix connect snowflake
 ```
 
-صبر کن تا دقیقاً این پیام را ببینی و Shell Prompt دوباره برگردد:
+صبر کن تا دقیقاً این پیام را ببینی:
 
 ```text
 Connected with built-in Snowflake.
 ```
 
-بعد دستور موردنظر را از Wrapper مناسب DevFix اجرا کن.
+و Shell Prompt دوباره برگردد.
 
-### اتصال، وضعیت و قطع
+بعد دستور موردنظر را از طریق DevFix اجرا کن.
+
+---
+
+# اتصال و قطع اتصال
+
+## اتصال
 
 ```bash
 devfix connect snowflake
+```
+
+## وضعیت
+
+```bash
 devfix status
+```
+
+## قطع اتصال
+
+```bash
 devfix disconnect
 ```
 
-برای restart مسیر:
+## ری‌استارت مسیر
 
 ```bash
 devfix restart
 ```
 
-DevFix را لازم نیست همیشه روشن نگه داری. اگر Direct قابل استفاده است، معمولاً سریع‌تر است.
+---
+
+# مهم: چه زمانی DevFix را روشن کنم؟
+
+DevFix را وقتی روشن کن که یکی از این موارد رخ دهد:
+
+```text
+timeout
+TLS failure
+connection reset
+blocked/unreachable developer endpoint
+GHCR مشکل دارد
+Homebrew download گیر می‌کند
+GitHub download مستقیم پایدار نیست
+```
+
+DevFix را لازم نیست همیشه روشن نگه داری.
+
+اگر ابزار مستقیم کار می‌کند، Direct معمولاً سریع‌تر است.
 
 ---
 
-## Homebrew
+# Homebrew
 
-روی این Mac ترجیحاً از Wrapper خود DevFix استفاده کن:
+برای Homebrew روی این مک ترجیحاً همیشه از Wrapper خود DevFix استفاده کن:
 
 ```bash
 devfix brew update
@@ -87,7 +153,7 @@ devfix brew cleanup
 devfix brew doctor
 ```
 
-### Update با Upgrade فرق دارد
+## Update با Upgrade فرق دارد
 
 برای تازه کردن اطلاعات Homebrew:
 
@@ -107,43 +173,69 @@ devfix brew outdated
 devfix brew upgrade
 ```
 
-اگر `outdated` خالی است، upgrade کلی لازم نیست.
-
-### هشدار Monterey / Tier 3
-
-هشدار macOS 12 / Tier 3 به‌تنهایی به معنی خرابی Homebrew نیست. بعضی Formulaهای جدید روی Intel Monterey Bottle سازگار ندارند و به source build می‌روند؛ بنابراین هر خطای install لزوماً مشکل اینترنت یا DevFix نیست.
+اگر `outdated` خالی است، `upgrade` کلی لازم نیست.
 
 ---
 
-## GitHub CLI — gh
+# هشدار macOS 12 / Tier 3
 
-`gh` در این سیستم مستقیم نصب شده است:
+Homebrew روی Monterey ممکن است این هشدار را بدهد:
+
+```text
+Warning: You are using macOS 12.
+This is a Tier 3 configuration.
+```
+
+این هشدار به‌تنهایی به معنی خرابی Homebrew نیست.
+
+بعضی Formulaهای جدید روی Intel Monterey Bottle آماده ندارند و ممکن است مجبور به build from source شوند.
+
+بنابراین هر خطای install لزوماً مشکل DevFix یا اینترنت نیست.
+
+---
+
+# GitHub CLI — gh
+
+`gh` الان مستقیم در این مسیر نصب شده:
 
 ```text
 /usr/local/bin/gh
 ```
 
-بررسی نسخه و Login:
+بررسی نسخه:
 
 ```bash
 gh --version
+```
+
+بررسی Login:
+
+```bash
 gh auth status
 ```
 
-خاموش کردن DevFix باعث Logout شدن `gh` نمی‌شود:
+Login در Keychain ذخیره می‌شود.
+
+## مهم
+
+خاموش کردن DevFix باعث Logout شدن `gh` نمی‌شود.
+
+این دو مستقل‌اند:
 
 ```text
 gh login = هویت و Credential GitHub
-DevFix   = فقط مسیر شبکه
+DevFix   = مسیر شبکه
 ```
 
-اگر `gh` مستقیم کار می‌کند، DevFix لازم نیست. اگر مسیر شبکه مشکل داشت:
+اگر `gh` مستقیم کار می‌کند، لازم نیست DevFix روشن باشد.
+
+اگر شبکه GitHub مشکل داشت:
 
 ```bash
 devfix run gh <command>
 ```
 
-مثال:
+مثلاً:
 
 ```bash
 devfix run gh auth status
@@ -151,7 +243,7 @@ devfix run gh auth status
 
 ---
 
-## Git
+# Git
 
 اگر Git مستقیم کار می‌کند:
 
@@ -170,7 +262,7 @@ devfix git clone https://github.com/OWNER/REPO.git
 
 ---
 
-## curl و دانلود
+# curl و دانلود فایل
 
 اگر URL مستقیم قابل دسترس است:
 
@@ -184,7 +276,7 @@ curl -fL -O <URL>
 devfix curl -fL -O <URL>
 ```
 
-برای اتصال ناپایدار، Retry محدود و مشخص استفاده کن؛ برای نمونه:
+برای اتصال‌های ناپایدار می‌توان از Retry استفاده کرد:
 
 ```bash
 devfix curl --http1.1 -fL \
@@ -194,11 +286,12 @@ devfix curl --http1.1 -fL \
   -O <URL>
 ```
 
-اگر یک فایل کوچک با Snowflake ETA چندساعته نشان می‌دهد، کورکورانه منتظر نمان؛ در صورت امکان Direct را مقایسه کن.
+اگر فایل کوچک با Snowflake چند ساعت ETA نشان می‌دهد، منتظر نمان.
+در صورت امکان Direct را امتحان کن.
 
 ---
 
-## اجرای هر CLI از مسیر DevFix
+# اجرای هر CLI از مسیر DevFix
 
 قالب عمومی:
 
@@ -214,69 +307,165 @@ devfix run python script.py
 devfix run gh repo view
 ```
 
+این برای برنامه‌های Command-Line است.
+
 ---
 
-## آیا DevFix می‌تواند یک سایت یا IP محدودشده را باز کند؟
+# آیا DevFix می‌تواند سایت یا IP فیلترشده را باز کند؟
 
-برای یک درخواست CLI، در صورتی که مقصد از Tor/Snowflake قابل دسترسی باشد:
+## برای CLI: بله، در حد یک درخواست شبکه
+
+مثلاً:
 
 ```bash
 devfix curl https://example.com
+```
+
+یا:
+
+```bash
 devfix curl https://1.2.3.4
 ```
 
-اما نسخه فعلی VPN سراسری یا Browser VPN نیست و Safari/Chrome را خودکار Proxy نمی‌کند.
+اگر مقصد از طریق Tor/Snowflake قابل دسترس باشد، درخواست می‌تواند از آن مسیر عبور کند.
+
+## برای مرورگر: نه به‌صورت خودکار
+
+DevFix در نسخه فعلی یک VPN سراسری یا Browser VPN نیست.
+
+این دستور وجود ندارد:
+
+```text
+devfix open <blocked-site>
+```
+
+و DevFix خودش Safari/Chrome را به‌طور خودکار Proxy نمی‌کند.
+
+DevFix یک SOCKS محلی برای Processهای مدیریت‌شده‌ی خودش می‌سازد، نه تنظیم سراسری Network macOS.
+
+پس برای وب‌گردی عمومی از DevFix به‌عنوان VPN دائمی استفاده نکن.
 
 ---
 
-## External Proxy
+# External Proxy
 
-اگر یک Proxy خارجی معتبر داری، DevFix می‌تواند از آن استفاده کند:
+اگر روزی یک Proxy خارجی معتبر داشتی، DevFix می‌تواند آن را هم استفاده کند:
 
 ```bash
 devfix proxy set socks5h://127.0.0.1:1080
 devfix connect external-proxy
 ```
 
-این بخش برای استفاده از یک Proxy واقعی موجود است؛ DevFix خودش یک IP Proxy دلخواه تولید نمی‌کند.
+و برای دیدن وضعیت:
+
+```bash
+devfix proxy status
+```
+
+پاک کردن:
+
+```bash
+devfix proxy clear
+```
+
+این بخش برای Proxy موجود است؛ DevFix خودش IP Proxy دلخواه تولید نمی‌کند.
 
 ---
 
-## Transportها
+# Transportها
+
+دیدن Transportها:
 
 ```bash
 devfix transport list
+```
+
+وضعیت:
+
+```bash
 devfix transport status
+```
+
+تست Direct:
+
+```bash
 devfix transport test direct
+```
+
+تست Snowflake:
+
+```bash
 devfix transport test snowflake
+```
+
+انتخاب خودکار:
+
+```bash
 devfix transport auto
 ```
 
 ---
 
-## اگر Snowflake گیر کرد
+# اگر Snowflake گیر کرد
 
-اگر bootstrap زیر 100٪ متوقف شد، آن را transport/bootstrap failure در نظر بگیر. اگر Tor به 100٪ رسید ولی endpoint validation شکست خورد، route-validation failure است. این دو را یکی ندان.
+اگر زیر 100٪ متوقف شد:
 
-یک Session خراب Snowflake لزوماً به معنی خرابی DevFix نیست. با اینترنت پایدار و retry محدود دوباره امتحان کن؛ Wi-Fi/Hotspot را وسط Bootstrap یا Download عوض نکن.
+```text
+Bootstrap / Transport failure
+```
+
+اگر به 100٪ رسید ولی Endpoint validation شکست خورد:
+
+```text
+Route validation failure
+```
+
+این دو مشکل متفاوت‌اند.
+
+یک Session خراب Snowflake لزوماً به معنی خرابی DevFix نیست.
+
+ابتدا:
+
+```bash
+devfix disconnect
+devfix connect snowflake
+```
+
+یک بار با اینترنت پایدار امتحان کن.
+
+شبکه، Wi‑Fi یا Hotspot را وسط Bootstrap یا Download عوض نکن.
 
 ---
 
-## Log و عیب‌یابی
+# Log و عیب‌یابی
+
+آخرین Logها:
 
 ```bash
 devfix logs --tail 200
+```
+
+Doctor:
+
+```bash
 devfix doctor
+```
+
+Doctor کامل‌تر:
+
+```bash
 devfix doctor --verbose
 ```
 
-قبل از انتشار Log در فضای عمومی آن را مرور کن.
+قبل از فرستادن Log در جای عمومی، آن را مرور کن.
 
 ---
 
-## FFmpeg و FFprobe
+# FFmpeg و FFprobe
 
-این دو مستقیم نصب شده‌اند، نه توسط Homebrew:
+این دو در حال حاضر مستقیم نصب شده‌اند، نه توسط Homebrew.
+
+مسیرها:
 
 ```text
 /usr/local/bin/ffmpeg
@@ -290,15 +479,95 @@ ffmpeg -version
 ffprobe -version
 ```
 
-`brew upgrade` آن‌ها را آپدیت نمی‌کند؛ نسخه Direct باید جداگانه بررسی و به‌روزرسانی شود.
+بنابراین:
 
-`gh` نیز Direct install است و Homebrew آن را آپدیت نمی‌کند.
+```bash
+brew upgrade
+```
 
-قبل از اجرای `brew install gh` یا `brew install ffmpeg` بررسی کن Direct install موجود با Homebrew conflict نکند.
+آن‌ها را آپدیت نمی‌کند.
+
+برای آپدیت آینده باید نسخه‌ی جدید Direct به‌صورت جدا بررسی و نصب شود.
 
 ---
 
-## چیزهایی که نباید بی‌دلیل انجام دهی
+# gh هم Homebrew-managed نیست
+
+`gh` نیز در حال حاضر Direct install است:
+
+```text
+/usr/local/bin/gh
+```
+
+پس Homebrew آن را آپدیت نمی‌کند.
+
+قبل از نصب دوباره‌ی:
+
+```bash
+brew install gh
+brew install ffmpeg
+```
+
+حتماً بررسی کن که Direct install فعلی با Homebrew conflict نکند.
+
+---
+
+# دستورات سریع موردنیاز
+
+## روشن کردن DevFix
+
+```bash
+devfix connect snowflake
+```
+
+## وضعیت
+
+```bash
+devfix status
+```
+
+## Homebrew
+
+```bash
+devfix brew update
+devfix brew outdated
+```
+
+## GitHub CLI
+
+```bash
+gh auth status
+```
+
+## Git از مسیر DevFix
+
+```bash
+devfix git <args>
+```
+
+## curl از مسیر DevFix
+
+```bash
+devfix curl <args>
+```
+
+## هر CLI
+
+```bash
+devfix run <command> <args>
+```
+
+## خاموش کردن
+
+```bash
+devfix disconnect
+```
+
+---
+
+# چیزهایی که نباید بی‌دلیل انجام بدهی
+
+بدون دلیل مشخص این کارها را انجام نده:
 
 ```text
 brew reinstall ...
@@ -315,28 +584,39 @@ chmod 777
 
 ---
 
-## مدل ذهنی ساده
+# مدل ذهنی خیلی ساده
 
 ```text
 GitHub Login
-  → gh Credential در Keychain
-  → ماندگار است و با devfix disconnect از بین نمی‌رود
-
-DevFix
-  → فقط مسیر شبکه است
-  → فقط وقتی لازم است روشنش کن
+    |
+    +-- gh Credential در Keychain
+    |   ماندگار است و با disconnect شدن DevFix از بین نمی‌رود
+    |
+    +-- DevFix
+        فقط مسیر شبکه است
+        فقط وقتی نیاز است روشنش کن
 ```
 
 و:
 
 ```text
 Direct کار می‌کند؟
-  بله → Direct استفاده کن
-  نه  → devfix connect snowflake
-        سپس devfix brew / git / curl / run
-        و بعد از پایان کار devfix disconnect
+    |
+    +-- بله → Direct استفاده کن
+    |
+    +-- نه → devfix connect snowflake
+             سپس devfix brew / git / curl / run
+             و بعد از پایان کار devfix disconnect
 ```
 
-## قانون نهایی
+---
 
-DevFix را «ابزار شبکه برای Developer CLIها» در نظر بگیر، نه VPN دائمی کل مک. اگر مستقیم کار می‌کند، مستقیم برو. اگر Developer endpoint محدود/ناپایدار است Snowflake را روشن کن. اگر Homebrew خطا داد، اول مشخص کن مشکل Network است یا Compatibility/Formula؛ کورکورانه reinstall یا upgrade نکن.
+# قانون نهایی
+
+DevFix را به‌عنوان «ابزار شبکه برای Developer CLIها» در نظر بگیر، نه VPN دائمی کل مک.
+
+اگر مستقیم کار می‌کند، مستقیم برو.
+
+اگر Developer endpoint مسدود/ناپایدار است، Snowflake را روشن کن.
+
+اگر Homebrew خطا داد، اول مشخص کن مشکل Network است یا Compatibility/Formula؛ کورکورانه reinstall یا upgrade نکن.
