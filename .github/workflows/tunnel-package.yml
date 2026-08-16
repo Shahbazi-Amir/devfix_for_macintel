@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [feature/devfix-tunnel]
-    paths: ["tunnel/**", "TOR_BUNDLE_VERSION", ".github/workflows/tunnel-package.yml"]
+    paths: ["tunnel/**", "tests/test_devfix_tunnel_tor_config.sh", "TOR_BUNDLE_VERSION", ".github/workflows/tunnel-package.yml"]
 
 permissions:
   contents: read
@@ -30,6 +30,12 @@ jobs:
           test "$(awk -F '\t' '$1=="meek" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 1
           test "$(awk -F '\t' '$1=="obfs4" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 1
 
+      - name: Verify V5 torrc with packaged Tor parser
+        run: |
+          /bin/bash tests/test_devfix_tunnel_tor_config.sh \
+            build/tunnel/vendor/tor \
+            /tmp/devfix-tunnel-transports.tsv
+
       - name: Build macOS pkg
         run: tunnel/scripts/build-pkg.sh
 
@@ -54,6 +60,9 @@ jobs:
           test "$(awk -F '\t' '$1=="obfs4" {n++} END{print n+0}' /usr/local/share/devfix-tunnel/transports.tsv)" -ge 1
           test -f /Library/LaunchDaemons/com.devfix.tunnel.recovery.plist
           /usr/local/bin/devfix-tunnel doctor
+          /bin/bash tests/test_devfix_tunnel_tor_config.sh \
+            /usr/local/libexec/devfix-tunnel/tor \
+            /usr/local/share/devfix-tunnel/transports.tsv
 
       - name: Verify stable DevFix source unchanged
         run: |
