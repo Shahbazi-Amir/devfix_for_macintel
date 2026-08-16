@@ -1,4 +1,4 @@
-# DevFix Tunnel 0.3.0-rc2 — Engineering Status Lock
+# DevFix Tunnel 0.3.0-rc3 — Engineering Status Lock
 
 Date: 2026-08-16
 
@@ -6,140 +6,120 @@ Repository: `Shahbazi-Amir/devfix_for_macintel`
 
 Development branch: `feature/devfix-tunnel`
 
-Stable DevFix branch: `main` — READ-ONLY for Tunnel work
+Stable DevFix branch: `main` — READ-ONLY for Tunnel work.
 
-## Exact validated RC2 identity
+## Exact validated RC3 identity
 
 Final shared gate SHA:
 
-`1e56a6006be661dd1b4d743dd4aa98992c1e22a3`
+`5142badc0da48953dcc2cdecb6f080ef6fac27e6`
 
-Both official Tunnel workflows passed on this exact SHA. Root-level status/acceptance documentation may advance the branch ref without changing the locked product/package identity above.
+Both official Tunnel workflows passed on this exact SHA.
 
-## Why RC2 replaced RC1
+## Why RC3 replaced RC2
 
-Physical Intel Monterey testing of `0.3.0-rc1` produced three concrete failure classes:
+Physical Intel Monterey testing of `0.3.0-rc2` exhausted the full transport catalog and preserved fail-closed System Proxy behavior, but exposed two additional resilience problems.
 
-1. `REAL_MAC_UNKNOWN_BRIDGE_EXCLUSION`
-   - Snowflake and meek repeatedly logged `Not using bridge ... it is in ExcludeNodes` while Foreign-only mode was enabled.
-   - RC2 changes the policy to `GeoIPExcludeUnknown 0` plus explicit `ExcludeExitNodes {ir},{??}`, so unknown-country entry bridges are not globally excluded while Iran/unknown exits remain excluded.
+### REAL_MAC_COLD_DIRECTORY_CACHE_EACH_FALLBACK
 
-2. `REAL_MAC_AUTO_CATALOG_TRUNCATION`
-   - RC1 stopped after five attempts: 2 Snowflake + 1 meek + only 2 obfs4, despite 7 packaged obfs4 candidates.
-   - RC2 defaults `MAX_AUTO_ATTEMPTS` to `0`, meaning exhaust the finite packaged catalog. A positive explicit override can still bound attempts.
+Later obfs4 candidates reached 45–50%, obtained bridge descriptors and a usable consensus, but each fallback used a fresh attempt DataDirectory. Because Tor directory cache followed the per-attempt state, useful consensus/cert/microdescriptor progress was discarded when a candidate was terminated.
 
-3. `REAL_MAC_PHASE_AWARE_BOOTSTRAP_STALL`
-   - RC1 killed an obfs4 route after it reached 30% (`Loading networkstatus consensus`) and then showed no percentage change for 90 seconds.
-   - RC2 uses phase-aware default no-progress limits: 90s initial, 150s after >=10%, 240s from >=25%. The explicit `DEVFIX_TUNNEL_STALL_TIMEOUT` override remains available for deterministic tests.
+RC3 keeps disposable per-attempt DataDirectories but introduces a persistent user-owned `CacheDirectory` under DevFix Tunnel state. The cache survives candidate fallback, disconnect, and later sessions. `AvoidDiskWrites 0` allows normal directory cache persistence.
 
-RC1 must not be promoted to stable.
+### REAL_MAC_DESCRIPTOR_PHASE_TOO_AGGRESSIVE
 
-## Official RC2 CI gate
+Physical RC2 obfs4 candidates 6 and 7 reached `Bootstrapped 50% (loading_descriptors)`. The logs subsequently reported that the current consensus contained exit nodes and Tor could build exit/internal paths, but the controller terminated each candidate after 240 seconds without a percentage change.
+
+RC3 retains short early-failure limits but increases late directory-phase grace:
+
+- initial stage: 90 seconds without progress;
+- handshake stage: 180 seconds;
+- consensus stage: 360 seconds;
+- directory/descriptors stage from >=40%: 900 seconds;
+- total attempt ceiling: 1200 seconds.
+
+Late directory stalls are separately classified as `DIRECTORY_INFO_STALL`.
+
+System Proxy remains disabled until bootstrap reaches 100% and routed HTTPS validation passes.
+
+## Physical RC2 safety result
+
+The failed RC2 physical run left `scutil --proxy` in the original non-tunneled state. No Tunnel-owned System SOCKS Proxy was enabled because no transport reached the activation gate. Therefore the failed run did not globally switch the Mac to a dead proxy or change system-wide routed public IP through DevFix Tunnel.
+
+## Official RC3 CI gate
 
 Workflow: `DevFix Tunnel CI`
 
-Run ID: `31964265658`
+Run ID: `31968158519`
 
-Head SHA: `1e56a6006be661dd1b4d743dd4aa98992c1e22a3`
+Head SHA: `5142badc0da48953dcc2cdecb6f080ef6fac27e6`
 
 Result: **PASS**
 
-Validated classes include:
+Validated on Ubuntu and Intel macOS as applicable:
 
-- syntax: PASS
-- ShellCheck without suppressing findings: PASS
-- original System Proxy/guardian/restore/conflict suite: PASS
-- V5 Snowflake-to-meek fallback fixture: PASS
-- exit-policy/GeoIP fixture suite: PASS
-- process-scoped `run` suite: PASS
-- Selective Chrome suite: PASS
-- RC2 physical-failure regression: PASS on Ubuntu
-- RC2 physical-failure regression: PASS on Intel macOS
-- regression proves auto mode reaches attempt 6 / obfs4 candidate 3 after five prior failures: PASS
-- regression proves `GeoIPExcludeUnknown 0` + `ExcludeExitNodes {ir},{??}`: PASS
-- regression proves phase-aware stall policy is present: PASS
-- inherited stable DevFix regression: PASS on Ubuntu
-- inherited stable DevFix regression: PASS on Intel macOS
+- syntax and ShellCheck: PASS;
+- all System Proxy/guardian/restore/conflict tests: PASS;
+- Selective Chrome suite: PASS;
+- RC2 full-catalog/bridge-policy regressions: PASS;
+- RC3 persistent CacheDirectory fallback regression: PASS;
+- RC3 cache survives disconnect and a later session: PASS;
+- RC3 late-directory bounded grace regression: PASS;
+- inherited stable DevFix regression: PASS on Ubuntu and Intel macOS;
+- macOS command contract: PASS.
 
-## Official RC2 package gate
+## Official RC3 package gate
 
 Workflow: `DevFix Tunnel Package`
 
-Run ID: `31964265651`
+Run ID: `31968158366`
 
-Head SHA: `1e56a6006be661dd1b4d743dd4aa98992c1e22a3`
+Head SHA: `5142badc0da48953dcc2cdecb6f080ef6fac27e6`
 
 Result: **PASS**
 
-Validated stages include:
+Validated stages:
 
-- portable archive build: PASS
-- bundle-native transport catalog generation: PASS
-- catalog minimums: Snowflake >=2, meek >=1, obfs4 >=7: PASS
-- real packaged Tor parser accepts Snowflake + RC2 GeoIP/exit policy: PASS
-- real packaged Tor parser accepts meek + RC2 GeoIP/exit policy: PASS
-- real packaged Tor parser accepts obfs4 + RC2 GeoIP/exit policy: PASS
-- macOS Intel `.pkg` build: PASS
-- package install smoke test on Intel macOS runner: PASS
-- installed version `0.3.0-rc2`: PASS
-- installed Selective Chrome launcher: PASS
-- installed Tor/lyrebird/GeoIP/catalog/recovery daemon: PASS
-- installed `doctor`: PASS
-- real Tor parser run again against installed package: PASS
-- stable DevFix `2.0.4` source preservation: PASS
-- artifact upload: PASS
+- official Tor Expert Bundle acquisition and checksum: PASS;
+- Tor-aligned GeoIP acquisition/checksum: PASS;
+- transport catalog generation: PASS (`snowflake>=2`, `meek>=1`, `obfs4>=7`);
+- real packaged Tor parser for Snowflake/meek/obfs4 with GeoIP exit policy and separate CacheDirectory: PASS;
+- macOS x86_64 portable archive: PASS;
+- macOS x86_64 `.pkg`: PASS;
+- install smoke test on Intel macOS: PASS;
+- installed version `0.3.0-rc3`: PASS;
+- installed persistent CacheDirectory configuration: PASS;
+- installed `AvoidDiskWrites 0`: PASS;
+- installed descriptor-stage 900-second policy: PASS;
+- installed doctor: PASS;
+- stable DevFix source remains `2.0.4`: PASS;
+- artifact upload: PASS.
 
-## Locked RC2 artifact
+## Locked RC3 artifact
 
-GitHub Actions artifact ID:
+GitHub Actions artifact ID: `9269052322`
 
-`9268053298`
+Artifact name: `DevFixTunnel-0.3.0-rc3-macos-x86_64`
 
-Artifact name:
+GitHub artifact ZIP digest / independent ZIP SHA-256:
 
-`DevFixTunnel-0.3.0-rc2-macos-x86_64`
+`c7f9e2174cbaaae66c34d63353378c67609a095195218e9504b093339c608b47`
 
-GitHub artifact digest / independently downloaded ZIP SHA-256:
+Contained files:
 
-`cd82d3f35cb29ca939ad7e3646f6fd9aaee859299c13537852f284854ac3396e`
+- `DevFixTunnel-0.3.0-rc3-macos-x86_64.pkg`
+  - SHA-256: `cc6d1f624a20d4ae3cb8d7c0be0fbf8a26844df87a589a4267f24a9c67a5ae5b`
+- `DevFixTunnel-0.3.0-rc3-macos-x86_64.tar.gz`
+  - SHA-256: `495d74a8dbeaab863043a4404e7bde697cf3f170fe32b627ecc60fde4b147c75`
 
-Contained files and independently verified SHA-256 values:
-
-- `DevFixTunnel-0.3.0-rc2-macos-x86_64.pkg`
-  - `3844d5536013dfe0ff64cd8979a7430bca443a6e10a876c9c8c7462a2567dbe8`
-- `DevFixTunnel-0.3.0-rc2-macos-x86_64.tar.gz`
-  - `ca7855dbae9c1535aeb9af0d3025f20c222807e69bc1b791f5b543cf87d90b78`
-- `SHA256SUMS.txt`
-  - `8314a32d1381b8808647002cfcb2c24026bd9f81cdce32c2914b2f7207087785`
-
-Independent `shasum -a 256 -c SHA256SUMS.txt`: **PASS** for both `.pkg` and `.tar.gz`.
-
-## Independent artifact-content audit
-
-The downloaded artifact was unpacked independently after both official workflows passed. Confirmed inside the delivered RC2 bytes:
-
-- `TUNNEL_VERSION="0.3.0-rc2"`
-- `GeoIPExcludeUnknown 0`
-- `ExcludeExitNodes {ir},{??}`
-- `MAX_AUTO_ATTEMPTS` default `0`
-- handshake-stage stall default `150`
-- consensus-stage stall default `240`
-- transport catalog counts: Snowflake `2`, meek `1`, obfs4 `7`
-- Tor GeoIP + GeoIPv6 files
-- Selective Chrome SOCKS/DNS/WebRTC controls
-
-## Safety result from the failed physical RC1 run
-
-Even though every RC1 transport failed on the real Mac, macOS System Proxy remained disabled. This confirms the fail-closed activation boundary behaved correctly in that failure scenario.
+Independent verification of `SHA256SUMS.txt`: **PASS** for both package files.
 
 ## Product boundary
 
-`0.3.0-rc2` is still not represented as a packet-level full-device VPN. It provides validated Tor/SOCKS routing, safe macOS System Proxy mode, Selective Chrome, and process-scoped CLI routing. A true full-device VPN remains a separate NetworkExtension milestone.
+`0.3.0-rc3` remains a Tor/SOCKS + safe macOS System Proxy/selective-app product, not a packet-level NetworkExtension VPN. Full-device routing remains a separate milestone.
 
 ## Remaining release gate
 
-Only `REAL_TARGET_MAC_ACCEPTANCE_RC2` remains before considering stable `0.3.0`.
+The remaining gate before stable `0.3.0` is `REAL_TARGET_MAC_ACCEPTANCE_RC3` on the actual Intel Monterey target.
 
-The next physical run should focus first on the exact failure path just remediated: install the locked RC2 package, verify identity/version/doctor, run `auto`, and confirm whether a validated Tor route reaches 100%. Browser/crash/reboot acceptance should follow only after the route itself succeeds.
-
-Until physical RC2 acceptance passes, the correct release label remains `0.3.0-rc2`, not stable `0.3.0`.
+The first RC3 physical run should stop at the route gate: exact package identity, safe upgrade, doctor, auto transport bootstrap, and live exit verification. Browser/crash/reboot acceptance follows only after a transport reaches 100% and HTTPS validation succeeds.
