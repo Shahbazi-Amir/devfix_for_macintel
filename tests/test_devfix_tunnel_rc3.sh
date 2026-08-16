@@ -92,8 +92,8 @@ grep -q 'Transport ready: obfs4 candidate 1' "$TMP/second.out" || fail 'persiste
 "$TUNNEL" disconnect >/dev/null 2>&1 || fail 'second disconnect failed'
 pass 'directory cache survives across sessions while attempt DataDirectories remain disposable'
 
-literal_descriptor='STALL_TIMEOUT_DESCRIPTORS="${DEVFIX_TUNNEL_STALL_TIMEOUT_DESCRIPTORS:-900}"'
-literal_bootstrap='BOOTSTRAP_TIMEOUT="${DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT:-1200}"'
+literal_descriptor="STALL_TIMEOUT_DESCRIPTORS=\"\${DEVFIX_TUNNEL_STALL_TIMEOUT_DESCRIPTORS:-900}\""
+literal_bootstrap="BOOTSTRAP_TIMEOUT=\"\${DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT:-1200}\""
 grep -Fq "$literal_descriptor" "$TUNNEL" || fail 'descriptor-stage timeout missing'
 grep -Fq "$literal_bootstrap" "$TUNNEL" || fail 'extended overall bootstrap ceiling missing'
 grep -Fq 'DIRECTORY_INFO_STALL' "$TUNNEL" || fail 'directory-stall classifier missing'
