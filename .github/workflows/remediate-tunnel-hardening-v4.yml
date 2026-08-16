@@ -34,12 +34,16 @@ jobs:
 
       - name: Commit hardening and remove one-shot infrastructure
         run: |
+          # GITHUB_TOKEN/App is intentionally not used to update workflow files.
+          # The V4 patch edits tunnel-ci locally for validation, then restores it.
+          # The authorized Connector applies that workflow edit separately.
+          git restore .github/workflows/tunnel-ci.yml
           rm -f .github/bootstrap/remediate-tunnel-hardening-v4.trigger
           rm -f .github/workflows/remediate-tunnel-hardening-v4.yml
           rm -f scripts/remediate_tunnel_hardening_v4.py
           rm -f scripts/remediate_tunnel_hardening_v4_post.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add tunnel tests/test_devfix_tunnel.sh .github/workflows/tunnel-ci.yml docs/tunnel/remediations .github/bootstrap .github/workflows scripts
+          git add tunnel tests/test_devfix_tunnel.sh docs/tunnel/remediations .github/bootstrap .github/workflows scripts
           git commit -m "fix(tunnel): harden mode and privilege boundaries"
           git push origin HEAD:feature/devfix-tunnel
