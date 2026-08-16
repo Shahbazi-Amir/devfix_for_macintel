@@ -41,6 +41,8 @@ jobs:
           PKG=$(ls build/tunnel/DevFixTunnel-*-macos-x86_64.pkg)
           sudo installer -pkg "$PKG" -target /
           /usr/local/bin/devfix-tunnel version | grep -F "0.3.0-rc1"
+          test -x /usr/local/bin/devfix-tunnel-chrome
+          bash -n /usr/local/bin/devfix-tunnel-chrome
           sudo /usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian version | grep -F "0.2.0-rc1"
           test -x /usr/local/libexec/devfix-tunnel/tor/tor
           test -x /usr/local/libexec/devfix-tunnel/tor/pluggable_transports/lyrebird
