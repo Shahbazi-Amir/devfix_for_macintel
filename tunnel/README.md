@@ -41,6 +41,15 @@ System Proxy activation is fail-closed. Existing enabled SOCKS/HTTP/HTTPS/PAC/au
 
 A root LaunchDaemon periodically detects orphaned guardian sessions and restores only proxy state that DevFix Tunnel can prove it owns.
 
+## Release-candidate validation
+
+The release candidate is accepted for real-Mac testing only after the current branch HEAD passes both official workflows:
+
+- `DevFix Tunnel CI`: syntax, ShellCheck, mocked safety/recovery integration tests, Intel macOS command contract, and inherited stable-DevFix regression.
+- `DevFix Tunnel Package`: verified Tor Expert Bundle acquisition, portable archive, macOS `.pkg`, install smoke test on Intel macOS, artifact hashes, and stable DevFix source-preservation check.
+
+A GitHub Actions remediation push made with `GITHUB_TOKEN` does not recursively trigger these workflows; therefore a normal repository write must intentionally retrigger both gates after remediation. This is a CI orchestration constraint, not a product-networking fallback.
+
 ## Stable gate
 
 `0.2.0-rc1` is a release candidate. Stable `0.2.0` requires real Intel Monterey acceptance: real Snowflake, System Proxy apply/readback, Safari/Chrome, disconnect restoration, Tor-crash restoration, sleep/network change, and reboot/orphan recovery.
