@@ -106,7 +106,6 @@ Path("tunnel/VERSION").write_text("0.3.0-rc2\n")
 for path in [
     Path("tests/test_devfix_tunnel.sh"),
     Path("tests/test_devfix_tunnel_chrome.sh"),
-    Path(".github/workflows/tunnel-package.yml"),
 ]:
     path.write_text(path.read_text().replace("0.3.0-rc1", "0.3.0-rc2"))
 
