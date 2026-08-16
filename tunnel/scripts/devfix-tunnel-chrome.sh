@@ -42,8 +42,8 @@ ensure_socks_route() {
   current=$(status_output)
   state=$(printf '%s\n' "$current" | sed -n 's/^State: //p' | head -n 1)
   if [ "$state" != "CONNECTED" ]; then
-    printf '%s\n' "DevFix Tunnel is not connected; starting isolated SOCKS mode..."
-    "$CLI_BIN" connect socks --transport auto --foreign-only || return 1
+    printf '%s\n' "DevFix Tunnel is not connected; starting isolated SOCKS mode..." >&2
+    "$CLI_BIN" connect socks --transport auto --foreign-only >&2 || return 1
     current=$(status_output)
   fi
 
@@ -51,6 +51,9 @@ ensure_socks_route() {
   case "$port" in
     ''|*[!0-9]*) return 1 ;;
   esac
+
+  # This function is used in command substitution. Its stdout contract is
+  # intentionally the numeric SOCKS port only; diagnostics belong on stderr.
   printf '%s' "$port"
 }
 
