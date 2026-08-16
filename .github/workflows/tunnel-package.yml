@@ -14,32 +14,56 @@ jobs:
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
+
       - name: Build portable archive
         run: tunnel/scripts/build-dist.sh
+
+      - name: Verify bundle-native runtime inputs
+        run: |
+          test -f build/tunnel/vendor/tor/pluggable_transports/pt_config.json
+          test -f build/tunnel/vendor/tor/geoip
+          test -f build/tunnel/vendor/tor/geoip6
+          python3 tunnel/scripts/generate-runtime-catalog.py \
+            build/tunnel/vendor/tor/pluggable_transports/pt_config.json \
+            /tmp/devfix-tunnel-transports.tsv
+          test "$(awk -F '\t' '$1=="snowflake" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 2
+          test "$(awk -F '\t' '$1=="meek" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 1
+          test "$(awk -F '\t' '$1=="obfs4" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 1
+
       - name: Build macOS pkg
         run: tunnel/scripts/build-pkg.sh
+
       - name: Hash artifacts
         run: cd build/tunnel && shasum -a 256 DevFixTunnel-*.pkg DevFixTunnel-*.tar.gz | tee SHA256SUMS.txt
+
       - name: Install package smoke test
         run: |
           PKG=$(ls build/tunnel/DevFixTunnel-*-macos-x86_64.pkg)
           sudo installer -pkg "$PKG" -target /
-          /usr/local/bin/devfix-tunnel version | grep -F "0.2.0-rc1"
+          /usr/local/bin/devfix-tunnel version | grep -F "0.3.0-rc1"
           sudo /usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian version | grep -F "0.2.0-rc1"
           test -x /usr/local/libexec/devfix-tunnel/tor/tor
           test -x /usr/local/libexec/devfix-tunnel/tor/pluggable_transports/lyrebird
+          test -f /usr/local/libexec/devfix-tunnel/tor/geoip
+          test -f /usr/local/libexec/devfix-tunnel/tor/geoip6
+          test -f /usr/local/share/devfix-tunnel/transports.tsv
+          test "$(awk -F '\t' '$1=="snowflake" {n++} END{print n+0}' /usr/local/share/devfix-tunnel/transports.tsv)" -ge 2
+          test "$(awk -F '\t' '$1=="meek" {n++} END{print n+0}' /usr/local/share/devfix-tunnel/transports.tsv)" -ge 1
+          test "$(awk -F '\t' '$1=="obfs4" {n++} END{print n+0}' /usr/local/share/devfix-tunnel/transports.tsv)" -ge 1
           test -f /Library/LaunchDaemons/com.devfix.tunnel.recovery.plist
           /usr/local/bin/devfix-tunnel doctor
+
       - name: Verify stable DevFix source unchanged
         run: |
           test "$(cat VERSION)" = "2.0.4"
           grep -F 'DEVFIX_VERSION="2.0.4"' bin/devfix
+
       - uses: actions/upload-artifact@v4
         with:
-          name: DevFixTunnel-0.2.0-rc1-macos-x86_64
+          name: DevFixTunnel-0.3.0-rc1-macos-x86_64
           path: |
-            build/tunnel/DevFixTunnel-0.2.0-rc1-macos-x86_64.pkg
-            build/tunnel/DevFixTunnel-0.2.0-rc1-macos-x86_64.tar.gz
+            build/tunnel/DevFixTunnel-0.3.0-rc1-macos-x86_64.pkg
+            build/tunnel/DevFixTunnel-0.3.0-rc1-macos-x86_64.tar.gz
             build/tunnel/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
