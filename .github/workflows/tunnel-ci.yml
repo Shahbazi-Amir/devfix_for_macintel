@@ -3,9 +3,9 @@ name: DevFix Tunnel CI
 on:
   push:
     branches: [feature/devfix-tunnel]
-    paths: ["tunnel/**", "tests/test_devfix_tunnel.sh", "docs/tunnel/**", ".github/workflows/tunnel-ci.yml"]
+    paths: ["tunnel/**", "tests/test_devfix_tunnel*.sh", "docs/tunnel/**", ".github/workflows/tunnel-ci.yml"]
   pull_request:
-    paths: ["tunnel/**", "tests/test_devfix_tunnel.sh", "docs/tunnel/**", ".github/workflows/tunnel-ci.yml"]
+    paths: ["tunnel/**", "tests/test_devfix_tunnel*.sh", "docs/tunnel/**", ".github/workflows/tunnel-ci.yml"]
 
 permissions:
   contents: read
@@ -18,10 +18,11 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Syntax
         run: |
-          bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh
+          bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh
       - name: ShellCheck
-        run: shellcheck -x tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh
+        run: shellcheck -x tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh
       - run: bash tests/test_devfix_tunnel.sh
+      - run: bash tests/test_devfix_tunnel_chrome.sh
 
   macos-command-contract:
     runs-on: macos-15-intel
@@ -31,14 +32,16 @@ jobs:
         run: |
           test -x /usr/sbin/networksetup
           test -x /sbin/route
+          test -x /usr/bin/nohup
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getsocksfirewallproxy"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-setsocksfirewallproxy"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getautoproxyurl"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getproxyautodiscovery"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-listnetworkserviceorder"
           sudo -n -u "#$(id -u)" /usr/bin/true
-      - run: bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tests/test_devfix_tunnel.sh
+      - run: bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh
       - run: bash tests/test_devfix_tunnel.sh
+      - run: bash tests/test_devfix_tunnel_chrome.sh
 
   inherited-devfix-regression:
     strategy:
