@@ -18,11 +18,12 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Syntax
         run: |
-          bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh tests/test_devfix_tunnel_tor_config.sh
+          bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh tests/test_devfix_tunnel_tor_config.sh tests/test_devfix_tunnel_rc2.sh
       - name: ShellCheck
-        run: shellcheck -x tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh tests/test_devfix_tunnel_tor_config.sh
+        run: shellcheck -x tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh tests/test_devfix_tunnel_tor_config.sh tests/test_devfix_tunnel_rc2.sh
       - run: bash tests/test_devfix_tunnel.sh
       - run: bash tests/test_devfix_tunnel_chrome.sh
+      - run: bash tests/test_devfix_tunnel_rc2.sh
 
   macos-command-contract:
     runs-on: macos-15-intel
@@ -39,9 +40,10 @@ jobs:
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getproxyautodiscovery"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-listnetworkserviceorder"
           sudo -n -u "#$(id -u)" /usr/bin/true
-      - run: bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh tests/test_devfix_tunnel_tor_config.sh
+      - run: bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh tests/test_devfix_tunnel_tor_config.sh tests/test_devfix_tunnel_rc2.sh
       - run: bash tests/test_devfix_tunnel.sh
       - run: bash tests/test_devfix_tunnel_chrome.sh
+      - run: bash tests/test_devfix_tunnel_rc2.sh
 
   inherited-devfix-regression:
     strategy:
