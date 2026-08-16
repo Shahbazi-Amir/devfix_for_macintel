@@ -169,10 +169,10 @@ ensure_socks_route() {
     current=$(status_output)
     state=$(status_field "$current" 'State: ')
     health=$(status_field "$current" 'Health: ')
-    [ "$state" = "CONNECTED" ] && [ "$health" = "OK" ] || {
+    if [ "$state" != "CONNECTED" ] || [ "$health" != "OK" ]; then
       err "DevFix Tunnel did not report a healthy connected SOCKS route"
       return 1
-    }
+    fi
   fi
 
   port=$(printf '%s\n' "$current" | sed -nE 's#^SOCKS: socks5h://127\.0\.0\.1:([0-9]+)$#\1#p' | head -n 1)
