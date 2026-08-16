@@ -1,0 +1,5 @@
+#!/bin/bash
+set -e
+OLD_GUARDIAN="/usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian"
+if [ -x "$OLD_GUARDIAN" ]; then "$OLD_GUARDIAN" recover || true; fi
+exit 0

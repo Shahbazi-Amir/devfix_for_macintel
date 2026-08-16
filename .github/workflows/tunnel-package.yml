@@ -1,0 +1,45 @@
+name: DevFix Tunnel Package
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/devfix-tunnel]
+    paths: ["tunnel/**", "TOR_BUNDLE_VERSION", ".github/workflows/tunnel-package.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build portable archive
+        run: tunnel/scripts/build-dist.sh
+      - name: Build macOS pkg
+        run: tunnel/scripts/build-pkg.sh
+      - name: Hash artifacts
+        run: cd build/tunnel && shasum -a 256 DevFixTunnel-*.pkg DevFixTunnel-*.tar.gz | tee SHA256SUMS.txt
+      - name: Install package smoke test
+        run: |
+          PKG=$(ls build/tunnel/DevFixTunnel-*-macos-x86_64.pkg)
+          sudo installer -pkg "$PKG" -target /
+          /usr/local/bin/devfix-tunnel version | grep -F "0.2.0-rc1"
+          sudo /usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian version | grep -F "0.2.0-rc1"
+          test -x /usr/local/libexec/devfix-tunnel/tor/tor
+          test -x /usr/local/libexec/devfix-tunnel/tor/pluggable_transports/lyrebird
+          test -f /Library/LaunchDaemons/com.devfix.tunnel.recovery.plist
+          /usr/local/bin/devfix-tunnel doctor
+      - name: Verify stable DevFix source unchanged
+        run: |
+          test "$(cat VERSION)" = "2.0.4"
+          grep -F 'DEVFIX_VERSION="2.0.4"' bin/devfix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DevFixTunnel-0.2.0-rc1-macos-x86_64
+          path: |
+            build/tunnel/DevFixTunnel-0.2.0-rc1-macos-x86_64.pkg
+            build/tunnel/DevFixTunnel-0.2.0-rc1-macos-x86_64.tar.gz
+            build/tunnel/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
