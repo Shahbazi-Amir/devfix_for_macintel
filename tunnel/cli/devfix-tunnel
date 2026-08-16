@@ -1,18 +1,16 @@
 #!/bin/bash
-# DevFix Tunnel — macOS Snowflake + safe System Proxy controller
+# DevFix Tunnel — resilient Tor transports + safe macOS System Proxy controller.
 # Stable DevFix remains separate; this product owns independent state/runtime.
 
 set -u
 
-TUNNEL_VERSION="0.2.0-rc1"
+TUNNEL_VERSION="0.3.0-rc1"
 TUNNEL_NAME="DevFix Tunnel"
 TUNNEL_TEST_MODE="${DEVFIX_TUNNEL_TEST_MODE:-0}"
 
 SELF_PATH="${BASH_SOURCE[0]}"
 SELF_DIR=$(cd -- "$(dirname -- "$SELF_PATH")" 2>/dev/null && pwd)
-if [ -z "$SELF_DIR" ]; then
-  SELF_DIR=$(pwd)
-fi
+[ -n "$SELF_DIR" ] || SELF_DIR=$(pwd)
 
 if [ "$(uname -s 2>/dev/null || printf unknown)" = "Darwin" ]; then
   TUNNEL_STATE_ROOT="${DEVFIX_TUNNEL_STATE_DIR:-$HOME/Library/Application Support/DevFixTunnel}"
@@ -23,15 +21,20 @@ else
 fi
 
 TUNNEL_LIBEXEC_DIR="${DEVFIX_TUNNEL_LIBEXEC_DIR:-/usr/local/libexec/devfix-tunnel}"
+TUNNEL_SHARE_DIR="${DEVFIX_TUNNEL_SHARE_DIR:-/usr/local/share/devfix-tunnel}"
 TUNNEL_TOR_BIN="${DEVFIX_TUNNEL_TOR_BIN:-$TUNNEL_LIBEXEC_DIR/tor/tor}"
 TUNNEL_LYREBIRD_BIN="${DEVFIX_TUNNEL_LYREBIRD_BIN:-$TUNNEL_LIBEXEC_DIR/tor/pluggable_transports/lyrebird}"
 TUNNEL_GUARDIAN_BIN="${DEVFIX_TUNNEL_GUARDIAN_BIN:-$TUNNEL_LIBEXEC_DIR/devfix-tunnel-guardian}"
+TUNNEL_TRANSPORT_CATALOG="${DEVFIX_TUNNEL_TRANSPORT_CATALOG:-$TUNNEL_SHARE_DIR/transports.tsv}"
+TUNNEL_GEOIP="${DEVFIX_TUNNEL_GEOIP:-$TUNNEL_LIBEXEC_DIR/tor/geoip}"
+TUNNEL_GEOIP6="${DEVFIX_TUNNEL_GEOIP6:-$TUNNEL_LIBEXEC_DIR/tor/geoip6}"
+
 if [ ! -x "$TUNNEL_GUARDIAN_BIN" ] && [ -x "$SELF_DIR/../libexec/devfix-tunnel-guardian" ]; then
   TUNNEL_GUARDIAN_BIN="$SELF_DIR/../libexec/devfix-tunnel-guardian"
 fi
 
 TUNNEL_RUN_DIR="$TUNNEL_STATE_ROOT/run"
-TUNNEL_TOR_DATA_DIR="$TUNNEL_STATE_ROOT/tor-data"
+TUNNEL_TOR_DATA_BASE="$TUNNEL_STATE_ROOT/tor-data"
 TUNNEL_STATE_FILE="$TUNNEL_RUN_DIR/state"
 TUNNEL_PID_FILE="$TUNNEL_RUN_DIR/tor.pid"
 TUNNEL_TORRC="$TUNNEL_RUN_DIR/torrc"
@@ -41,17 +44,15 @@ TUNNEL_PROXY_FAILED="$TUNNEL_RUN_DIR/system-proxy.failed"
 TUNNEL_PROXY_RESTORED="$TUNNEL_RUN_DIR/system-proxy.restored"
 TUNNEL_GUARDIAN_LOG="$TUNNEL_LOG_DIR/guardian-launch.log"
 TUNNEL_LOG="$TUNNEL_LOG_DIR/devfix-tunnel.log"
-TUNNEL_TOR_LOG="$TUNNEL_LOG_DIR/tor.log"
 
 DEFAULT_SOCKS_PORT="${DEVFIX_TUNNEL_SOCKS_PORT:-19150}"
-BOOTSTRAP_TIMEOUT="${DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT:-600}"
-STALL_TIMEOUT="${DEVFIX_TUNNEL_STALL_TIMEOUT:-180}"
+BOOTSTRAP_TIMEOUT="${DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT:-420}"
+STALL_TIMEOUT="${DEVFIX_TUNNEL_STALL_TIMEOUT:-90}"
 VALIDATION_TIMEOUT="${DEVFIX_TUNNEL_VALIDATION_TIMEOUT:-30}"
 GUARDIAN_START_TIMEOUT="${DEVFIX_TUNNEL_GUARDIAN_START_TIMEOUT:-30}"
 GUARDIAN_STOP_TIMEOUT="${DEVFIX_TUNNEL_GUARDIAN_STOP_TIMEOUT:-20}"
-
-DEFAULT_SNOWFLAKE_BRIDGE='snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 url=https://1098762253.rsc.cdn77.org front=www.phpmyadmin.net,cdn.zk.mk ice=stun:stun.antisip.com:3478,stun:stun.epygi.com:3478,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.mixvoip.com:3478,stun:stun.nextcloud.com:3478,stun:stun.bethesda.net:3478,stun:stun.nextcloud.com:443 utls-imitate=hellorandomizedalpn'
-SNOWFLAKE_BRIDGE="${DEVFIX_TUNNEL_SNOWFLAKE_BRIDGE:-$DEFAULT_SNOWFLAKE_BRIDGE}"
+MAX_AUTO_ATTEMPTS="${DEVFIX_TUNNEL_MAX_AUTO_ATTEMPTS:-5}"
+TOR_CHECK_URL="${DEVFIX_TUNNEL_TOR_CHECK_URL:-https://check.torproject.org/api/ip}"
 
 info() { printf '%s\n' "$*"; }
 warn() { printf 'Warning: %s\n' "$*" >&2; }
@@ -62,9 +63,9 @@ now_epoch() { date '+%s'; }
 
 ensure_dirs() {
   umask 077
-  mkdir -p "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_DIR" "$TUNNEL_LOG_DIR" ||
+  mkdir -p "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_BASE" "$TUNNEL_LOG_DIR" ||
     die "cannot create DevFix Tunnel state directories"
-  chmod 700 "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_DIR" "$TUNNEL_LOG_DIR" 2>/dev/null || true
+  chmod 700 "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_BASE" "$TUNNEL_LOG_DIR" 2>/dev/null || true
 }
 
 log_line() {
@@ -81,12 +82,14 @@ state_get() {
 }
 
 write_state() {
-  state="$1"; mode="$2"; pid="$3"; port="$4"; session="$5"; started="$6"; service="${7:-}"
+  state="$1"; mode="$2"; pid="$3"; port="$4"; session="$5"; started="$6"
+  service="${7:-}"; transport="${8:-}"; candidate="${9:-}"; requested_transport="${10:-auto}"
+  exit_policy="${11:-FOREIGN_ONLY}"; exit_country="${12:-}"; data_dir="${13:-}"; attempt_log="${14:-}"
   ensure_dirs
   tmp="$TUNNEL_STATE_FILE.tmp.$$"
   umask 077
   {
-    printf 'SCHEMA=2\n'
+    printf 'SCHEMA=3\n'
     printf 'STATE=%s\n' "$state"
     printf 'MODE=%s\n' "$mode"
     printf 'PID=%s\n' "$pid"
@@ -94,15 +97,33 @@ write_state() {
     printf 'SESSION=%s\n' "$session"
     printf 'STARTED=%s\n' "$started"
     printf 'PROXY_SERVICE=%s\n' "$service"
+    printf 'TRANSPORT=%s\n' "$transport"
+    printf 'CANDIDATE=%s\n' "$candidate"
+    printf 'REQUESTED_TRANSPORT=%s\n' "$requested_transport"
+    printf 'EXIT_POLICY=%s\n' "$exit_policy"
+    printf 'EXIT_COUNTRY=%s\n' "$exit_country"
+    printf 'DATA_DIR=%s\n' "$data_dir"
+    printf 'ATTEMPT_LOG=%s\n' "$attempt_log"
     printf 'TORRC=%s\n' "$TUNNEL_TORRC"
   } > "$tmp" || die "cannot write temporary tunnel state"
   chmod 600 "$tmp" 2>/dev/null || true
   mv "$tmp" "$TUNNEL_STATE_FILE" || die "cannot atomically replace tunnel state"
 }
 
+safe_remove_data_dir() {
+  data_dir="$1"
+  [ -n "$data_dir" ] || return 0
+  case "$data_dir" in
+    "$TUNNEL_TOR_DATA_BASE"/*) rm -rf "$data_dir" ;;
+    *) warn "refusing to remove unexpected Tor data path: $data_dir"; return 1 ;;
+  esac
+}
+
 clear_runtime_state() {
+  data_dir=$(state_get DATA_DIR '')
   rm -f "$TUNNEL_STATE_FILE" "$TUNNEL_PID_FILE" "$TUNNEL_TORRC"
   rm -f "$TUNNEL_STOP_REQUEST" "$TUNNEL_PROXY_READY" "$TUNNEL_PROXY_FAILED" "$TUNNEL_PROXY_RESTORED"
+  safe_remove_data_dir "$data_dir" 2>/dev/null || true
 }
 
 is_pid_alive() { pid="$1"; case "$pid" in ''|*[!0-9]*) return 1 ;; esac; kill -0 "$pid" 2>/dev/null; }
@@ -134,30 +155,86 @@ choose_socks_port() {
 
 torrc_quote() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 
+runtime_available() {
+  [ -x "$TUNNEL_TOR_BIN" ] && [ -x "$TUNNEL_LYREBIRD_BIN" ] &&
+    [ -f "$TUNNEL_TRANSPORT_CATALOG" ] && [ -f "$TUNNEL_GEOIP" ] && [ -f "$TUNNEL_GEOIP6" ]
+}
+
+validate_transport_name() {
+  case "$1" in auto|snowflake|meek|obfs4) return 0 ;; *) return 1 ;; esac
+}
+
+validate_country_code() {
+  cc="$1"
+  case "$cc" in
+    [A-Za-z][A-Za-z]) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+catalog_candidates() {
+  wanted="$1"
+  [ -f "$TUNNEL_TRANSPORT_CATALOG" ] || return 1
+  awk -F '\t' -v wanted="$wanted" '
+    /^#/ {next}
+    NF >= 3 && $1 == wanted { bridge=$3; for (i=4;i<=NF;i++) bridge=bridge "\t" $i; print $1 "\t" $2 "\t" bridge }
+  ' "$TUNNEL_TRANSPORT_CATALOG"
+}
+
+transport_plugin_name() {
+  case "$1" in
+    snowflake) printf 'snowflake' ;;
+    meek) printf 'meek_lite' ;;
+    obfs4) printf 'obfs4' ;;
+    *) return 1 ;;
+  esac
+}
+
 write_torrc() {
-  port="$1"; ensure_dirs; q_data=$(torrc_quote "$TUNNEL_TOR_DATA_DIR")
+  port="$1"; data_dir="$2"; transport="$3"; bridge="$4"; exit_policy="$5"; exit_country="$6"
+  ensure_dirs
+  q_data=$(torrc_quote "$data_dir")
+  q_geoip=$(torrc_quote "$TUNNEL_GEOIP")
+  q_geoip6=$(torrc_quote "$TUNNEL_GEOIP6")
+  plugin=$(transport_plugin_name "$transport") || die "unsupported transport: $transport"
   case "$TUNNEL_LYREBIRD_BIN" in *' '*|*$'\t'*|*$'\n'*|*$'\r'*) die "lyrebird executable path contains whitespace" ;; esac
+
   cat > "$TUNNEL_TORRC" <<EOF
 DataDirectory $q_data
 SocksPort 127.0.0.1:$port
 ClientOnly 1
 AvoidDiskWrites 1
 UseBridges 1
-ClientTransportPlugin snowflake exec $TUNNEL_LYREBIRD_BIN
-Bridge $SNOWFLAKE_BRIDGE
-Log notice stdout
+ClientTransportPlugin $plugin exec $TUNNEL_LYREBIRD_BIN
+Bridge $bridge
+GeoIPFile $q_geoip
+GeoIPv6File $q_geoip6
 EOF
+
+  if [ "$exit_policy" = "FOREIGN_ONLY" ]; then
+    cat >> "$TUNNEL_TORRC" <<EOF
+GeoIPExcludeUnknown 1
+ExcludeExitNodes {ir},{??}
+EOF
+  fi
+  if [ -n "$exit_country" ]; then
+    printf 'ExitNodes {%s}\n' "$(printf '%s' "$exit_country" | tr '[:upper:]' '[:lower:]')" >> "$TUNNEL_TORRC"
+  fi
+  printf '%s\n' 'Log notice stdout' >> "$TUNNEL_TORRC"
   chmod 600 "$TUNNEL_TORRC" 2>/dev/null || true
 }
 
 curl_bin() {
-  if [ -n "${DEVFIX_TUNNEL_CURL_BIN:-}" ] && [ -x "$DEVFIX_TUNNEL_CURL_BIN" ]; then printf '%s' "$DEVFIX_TUNNEL_CURL_BIN";
-  elif [ -x /usr/bin/curl ]; then printf '%s' /usr/bin/curl;
-  elif command -v curl >/dev/null 2>&1; then command -v curl; else return 1; fi
+  if [ -n "${DEVFIX_TUNNEL_CURL_BIN:-}" ] && [ -x "$DEVFIX_TUNNEL_CURL_BIN" ]; then printf '%s' "$DEVFIX_TUNNEL_CURL_BIN"
+  elif [ -x /usr/bin/curl ]; then printf '%s' /usr/bin/curl
+  elif command -v curl >/dev/null 2>&1; then command -v curl
+  else return 1
+  fi
 }
 
 validate_socks_route() {
-  port="$1"; [ "$TUNNEL_TEST_MODE" = "1" ] && return 0
+  port="$1"
+  [ "$TUNNEL_TEST_MODE" = "1" ] && return 0
   cb=$(curl_bin) || return 1
   for url in 'https://www.torproject.org/' 'https://example.com/'; do
     code=$("$cb" -L -sS -o /dev/null -w '%{http_code}' --proxy "socks5h://127.0.0.1:$port" --connect-timeout 10 --max-time "$VALIDATION_TIMEOUT" "$url" 2>/dev/null || printf '000')
@@ -166,14 +243,27 @@ validate_socks_route() {
   return 1
 }
 
-bootstrap_percent() {
-  [ -f "$TUNNEL_TOR_LOG" ] || { printf '0'; return; }
-  value=$(sed -nE 's/.*Bootstrapped ([0-9]+)%.*/\1/p' "$TUNNEL_TOR_LOG" | tail -n 1)
+bootstrap_percent_from_log() {
+  file="$1"
+  [ -f "$file" ] || { printf '0'; return; }
+  value=$(sed -nE 's/.*Bootstrapped ([0-9]+)%.*/\1/p' "$file" | tail -n 1)
   case "$value" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$value" ;; esac
 }
 
+classify_attempt_failure() {
+  transport="$1"; file="$2"; fallback="$3"
+  if [ "$transport" = "snowflake" ] && grep -q 'timeout waiting for DataChannel.OnOpen' "$file" 2>/dev/null; then
+    printf 'SNOWFLAKE_WEBRTC_DATACHANNEL_FAILURE'
+  elif [ "$transport" = "snowflake" ] && grep -q 'broker failure' "$file" 2>/dev/null; then
+    printf 'BROKER_RENDEZVOUS_FAILURE'
+  else
+    printf '%s' "$fallback"
+  fi
+}
+
 stop_owned_tor() {
-  pid="$1"; if ! is_pid_alive "$pid"; then return 0; fi
+  pid="$1"
+  if ! is_pid_alive "$pid"; then return 0; fi
   if ! pid_is_owned "$pid"; then warn "refusing to terminate PID $pid because DevFix Tunnel ownership could not be proven"; return 2; fi
   kill "$pid" 2>/dev/null || true
   deadline=$(( $(now_epoch) + 5 ))
@@ -181,52 +271,25 @@ stop_owned_tor() {
   if is_pid_alive "$pid"; then kill -KILL "$pid" 2>/dev/null || true; fi
 }
 
-runtime_available() { [ -x "$TUNNEL_TOR_BIN" ] && [ -x "$TUNNEL_LYREBIRD_BIN" ]; }
+run_transport_attempt() {
+  mode="$1"; requested_transport="$2"; transport="$3"; candidate="$4"; bridge="$5"; port="$6"; session="$7"; started="$8"; exit_policy="$9"; exit_country="${10}"; attempt_no="${11}"
+  data_dir="$TUNNEL_TOR_DATA_BASE/$session-attempt-$attempt_no-$transport-$candidate"
+  attempt_log="$TUNNEL_LOG_DIR/attempt-$session-$attempt_no-$transport-$candidate.log"
+  safe_remove_data_dir "$data_dir" 2>/dev/null || true
+  mkdir -p "$data_dir" || return 1
+  chmod 700 "$data_dir" 2>/dev/null || true
+  : > "$attempt_log"
+  chmod 600 "$attempt_log" 2>/dev/null || true
+  write_torrc "$port" "$data_dir" "$transport" "$bridge" "$exit_policy" "$exit_country"
 
-start_transport() {
-  requested_mode="$1"
-  ensure_dirs
-  runtime_available || die "independent Tor runtime is missing under $TUNNEL_LIBEXEC_DIR; install the DevFix Tunnel package"
-
-  old_pid=$(state_get PID '')
-  old_state=$(state_get STATE '')
-  old_mode=$(state_get MODE '')
-
-  if [ "$old_state" = "CONNECTED" ] && pid_is_owned "$old_pid"; then
-    if [ "$requested_mode" = "$old_mode" ]; then
-      return 0
-    fi
-    if [ "$old_mode" = "SYSTEM_PROXY" ]; then
-      die "an active System Proxy session already exists; disconnect or repair it before starting another transport mode"
-    fi
-    stop_owned_tor "$old_pid" || die "could not safely stop the previous tunnel-owned SOCKS transport"
-  elif [ -n "$old_pid" ] && is_pid_alive "$old_pid"; then
-    if ! pid_is_owned "$old_pid"; then
-      die "stale state references a live process not owned by DevFix Tunnel; run 'devfix-tunnel repair' after reviewing status"
-    fi
-    if [ "$old_mode" = "SYSTEM_PROXY" ]; then
-      die "stale System Proxy state with a live owned Tor process requires 'devfix-tunnel repair' before transport restart"
-    fi
-    stop_owned_tor "$old_pid" || die "could not safely stop stale tunnel-owned Tor process"
-  fi
-
-  clear_runtime_state
-  port=$(choose_socks_port "$DEFAULT_SOCKS_PORT") ||
-    die "no free local SOCKS port in $DEFAULT_SOCKS_PORT-$((DEFAULT_SOCKS_PORT + 19))"
-  write_torrc "$port"
-  : > "$TUNNEL_TOR_LOG"
-  chmod 600 "$TUNNEL_TOR_LOG" 2>/dev/null || true
-
-  session="$(now_epoch)-$$"
-  started="$(now_utc)"
-  write_state STARTING SOCKS '' "$port" "$session" "$started" ''
-  info "Starting DevFix Tunnel Snowflake transport..."
-  "$TUNNEL_TOR_BIN" -f "$TUNNEL_TORRC" >> "$TUNNEL_TOR_LOG" 2>&1 &
+  write_state STARTING SOCKS '' "$port" "$session" "$started" '' "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
+  info "Transport attempt $attempt_no: $transport candidate $candidate"
+  "$TUNNEL_TOR_BIN" -f "$TUNNEL_TORRC" >> "$attempt_log" 2>&1 &
   pid=$!
   printf '%s\n' "$pid" > "$TUNNEL_PID_FILE"
   chmod 600 "$TUNNEL_PID_FILE" 2>/dev/null || true
-  write_state BOOTSTRAPPING SOCKS "$pid" "$port" "$session" "$started" ''
-  log_line "session=$session state=BOOTSTRAPPING pid=$pid port=$port"
+  write_state BOOTSTRAPPING SOCKS "$pid" "$port" "$session" "$started" '' "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
+  log_line "session=$session attempt=$attempt_no transport=$transport candidate=$candidate state=BOOTSTRAPPING pid=$pid port=$port"
 
   start_epoch=$(now_epoch)
   deadline=$((start_epoch + BOOTSTRAP_TIMEOUT))
@@ -234,57 +297,123 @@ start_transport() {
   last_percent=-1
   while [ "$(now_epoch)" -lt "$deadline" ]; do
     if ! is_pid_alive "$pid"; then
-      write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''
-      err "TRANSPORT_PROCESS_FAILURE: Tor exited before bootstrap completed."
+      classification=$(classify_attempt_failure "$transport" "$attempt_log" TRANSPORT_PROCESS_FAILURE)
+      write_state FAILED SOCKS "$pid" "$port" "$session" "$started" '' "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
+      warn "$classification: $transport candidate $candidate exited before bootstrap completed."
+      safe_remove_data_dir "$data_dir" 2>/dev/null || true
       return 1
     fi
-    percent=$(bootstrap_percent)
+    percent=$(bootstrap_percent_from_log "$attempt_log")
     if [ "$percent" != "$last_percent" ]; then
-      info "Bootstrapped ${percent}%"
+      info "Bootstrapped ${percent}% ($transport/$candidate)"
       last_percent="$percent"
       last_progress_epoch=$(now_epoch)
     fi
-    if [ "$percent" -ge 100 ] 2>/dev/null; then
-      break
-    fi
+    if [ "$percent" -ge 100 ] 2>/dev/null; then break; fi
     if [ $(( $(now_epoch) - last_progress_epoch )) -ge "$STALL_TIMEOUT" ]; then
+      classification=$(classify_attempt_failure "$transport" "$attempt_log" BOOTSTRAP_STALL)
       stop_owned_tor "$pid" || true
-      write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''
-      err "SNOWFLAKE_BOOTSTRAP_FAILURE: bootstrap stalled at ${percent}% for ${STALL_TIMEOUT}s."
+      write_state FAILED SOCKS "$pid" "$port" "$session" "$started" '' "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
+      warn "$classification: $transport candidate $candidate stalled at ${percent}% for ${STALL_TIMEOUT}s."
+      safe_remove_data_dir "$data_dir" 2>/dev/null || true
       return 1
     fi
     sleep 1
   done
 
-  percent=$(bootstrap_percent)
+  percent=$(bootstrap_percent_from_log "$attempt_log")
   if [ "$percent" -lt 100 ] 2>/dev/null; then
     stop_owned_tor "$pid" || true
-    write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''
-    err "TIMEOUT: Snowflake did not reach 100% within ${BOOTSTRAP_TIMEOUT}s."
+    write_state FAILED SOCKS "$pid" "$port" "$session" "$started" '' "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
+    warn "BOOTSTRAP_TIMEOUT: $transport candidate $candidate did not reach 100% within ${BOOTSTRAP_TIMEOUT}s."
+    safe_remove_data_dir "$data_dir" 2>/dev/null || true
     return 1
   fi
 
-  write_state VALIDATING SOCKS "$pid" "$port" "$session" "$started" ''
-  info "Snowflake bootstrap complete; validating SOCKS route..."
+  write_state VALIDATING SOCKS "$pid" "$port" "$session" "$started" '' "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
+  info "$transport bootstrap complete; validating routed HTTPS..."
   if ! validate_socks_route "$port"; then
     stop_owned_tor "$pid" || true
-    write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''
-    err "ROUTE_VALIDATION_FAILURE: Tor reached 100% but routed HTTPS validation failed."
+    write_state FAILED SOCKS "$pid" "$port" "$session" "$started" '' "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
+    warn "ROUTE_VALIDATION_FAILURE: $transport candidate $candidate reached 100% but routed HTTPS validation failed."
+    safe_remove_data_dir "$data_dir" 2>/dev/null || true
     return 1
   fi
 
-  write_state CONNECTED SOCKS "$pid" "$port" "$session" "$started" ''
-  log_line "session=$session state=CONNECTED mode=SOCKS pid=$pid port=$port"
-  info "Snowflake transport is ready."
+  write_state CONNECTED SOCKS "$pid" "$port" "$session" "$started" '' "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
+  log_line "session=$session state=CONNECTED mode=SOCKS transport=$transport candidate=$candidate pid=$pid port=$port"
+  info "Transport ready: $transport candidate $candidate"
   info "Local SOCKS: socks5h://127.0.0.1:$port"
+  return 0
+}
+
+candidate_stream() {
+  requested="$1"
+  if [ "$requested" = "auto" ]; then
+    catalog_candidates snowflake
+    catalog_candidates meek
+    catalog_candidates obfs4
+  else
+    catalog_candidates "$requested"
+  fi
+}
+
+start_transport() {
+  requested_mode="$1"; requested_transport="$2"; exit_policy="$3"; exit_country="$4"
+  ensure_dirs
+  runtime_available || die "runtime/catalog/GeoIP is incomplete; reinstall the current DevFix Tunnel package"
+  validate_transport_name "$requested_transport" || die "unsupported transport: $requested_transport"
+
+  old_pid=$(state_get PID '')
+  old_state=$(state_get STATE '')
+  old_mode=$(state_get MODE '')
+  if [ "$old_state" = "CONNECTED" ] && pid_is_owned "$old_pid"; then
+    if [ "$requested_mode" = "$old_mode" ]; then return 0; fi
+    if [ "$old_mode" = "SYSTEM_PROXY" ]; then die "an active System Proxy session already exists; disconnect or repair it before starting another mode"; fi
+    stop_owned_tor "$old_pid" || die "could not safely stop the previous tunnel-owned SOCKS transport"
+  elif [ -n "$old_pid" ] && is_pid_alive "$old_pid"; then
+    if ! pid_is_owned "$old_pid"; then die "stale state references a live process not owned by DevFix Tunnel; run 'devfix-tunnel repair'"; fi
+    if [ "$old_mode" = "SYSTEM_PROXY" ]; then die "stale System Proxy state with a live Tor process requires repair"; fi
+    stop_owned_tor "$old_pid" || die "could not safely stop stale tunnel-owned Tor process"
+  fi
+
+  clear_runtime_state
+  port=$(choose_socks_port "$DEFAULT_SOCKS_PORT") || die "no free local SOCKS port in $DEFAULT_SOCKS_PORT-$((DEFAULT_SOCKS_PORT + 19))"
+  session="$(now_epoch)-$$"
+  started="$(now_utc)"
+  attempt_no=0
+  found=0
+
+  while IFS=$'\t' read -r transport candidate bridge; do
+    [ -n "$transport" ] || continue
+    found=1
+    attempt_no=$((attempt_no + 1))
+    if [ "$requested_transport" = "auto" ] && [ "$attempt_no" -gt "$MAX_AUTO_ATTEMPTS" ]; then break; fi
+    if run_transport_attempt "$requested_mode" "$requested_transport" "$transport" "$candidate" "$bridge" "$port" "$session" "$started" "$exit_policy" "$exit_country" "$attempt_no"; then
+      return 0
+    fi
+    warn "Falling back after failed $transport candidate $candidate."
+  done <<EOF
+$(candidate_stream "$requested_transport")
+EOF
+
+  [ "$found" -eq 1 ] || die "no bridge candidates found for transport '$requested_transport' in $TUNNEL_TRANSPORT_CATALOG"
+  last_transport=$(state_get TRANSPORT '')
+  last_candidate=$(state_get CANDIDATE '')
+  last_log=$(state_get ATTEMPT_LOG '')
+  write_state FAILED SOCKS '' "$port" "$session" "$started" '' "$last_transport" "$last_candidate" "$requested_transport" "$exit_policy" "$exit_country" '' "$last_log"
+  err "ALL_TRANSPORTS_FAILED: no validated Tor route was established. System Proxy was not enabled."
+  return 1
 }
 
 marker_get() { file="$1"; key="$2"; default_value="${3:-}"; [ -f "$file" ] || { printf '%s' "$default_value"; return; }; value=$(sed -n "s/^${key}=//p" "$file" | tail -n 1); [ -n "$value" ] && printf '%s' "$value" || printf '%s' "$default_value"; }
 
 sudo_bin() {
-  if [ -n "${DEVFIX_TUNNEL_SUDO_BIN:-}" ]; then printf '%s' "$DEVFIX_TUNNEL_SUDO_BIN";
-  elif [ -x /usr/bin/sudo ]; then printf '%s' /usr/bin/sudo;
-  elif command -v sudo >/dev/null 2>&1; then command -v sudo; else return 1; fi
+  if [ -n "${DEVFIX_TUNNEL_SUDO_BIN:-}" ]; then printf '%s' "$DEVFIX_TUNNEL_SUDO_BIN"
+  elif [ -x /usr/bin/sudo ]; then printf '%s' /usr/bin/sudo
+  elif command -v sudo >/dev/null 2>&1; then command -v sudo
+  else return 1
+  fi
 }
 
 start_system_proxy_guardian() {
@@ -292,29 +421,60 @@ start_system_proxy_guardian() {
   [ "$(uname -s 2>/dev/null || true)" = "Darwin" ] || { [ "$TUNNEL_TEST_MODE" = "1" ] || die "System Proxy mode is supported only on macOS"; }
   [ -x "$TUNNEL_GUARDIAN_BIN" ] || die "guardian helper missing: $TUNNEL_GUARDIAN_BIN"
   pid=$(state_get PID ''); port=$(state_get SOCKS_PORT ''); session=$(state_get SESSION ''); started=$(state_get STARTED '')
+  transport=$(state_get TRANSPORT ''); candidate=$(state_get CANDIDATE ''); requested_transport=$(state_get REQUESTED_TRANSPORT auto)
+  exit_policy=$(state_get EXIT_POLICY FOREIGN_ONLY); exit_country=$(state_get EXIT_COUNTRY ''); data_dir=$(state_get DATA_DIR ''); attempt_log=$(state_get ATTEMPT_LOG '')
   pid_is_owned "$pid" || die "cannot enable System Proxy because Tor ownership/health is not proven"
   rm -f "$TUNNEL_STOP_REQUEST" "$TUNNEL_PROXY_READY" "$TUNNEL_PROXY_FAILED" "$TUNNEL_PROXY_RESTORED"
   uid=$(id -u); gid=$(id -g)
   args=(apply --user-state "$TUNNEL_STATE_ROOT" --session "$session" --tor-pid "$pid" --port "$port" --uid "$uid" --gid "$gid")
   if [ -n "$service_override" ]; then args+=(--service "$service_override"); fi
-  if [ "$TUNNEL_TEST_MODE" = "1" ]; then "$TUNNEL_GUARDIAN_BIN" "${args[@]}" >> "$TUNNEL_GUARDIAN_LOG" 2>&1 &
-  else sb=$(sudo_bin) || die "sudo is required for safe macOS System Proxy changes"; "$sb" -v || die "administrator authorization is required for System Proxy mode"; "$sb" -n /usr/bin/nohup "$TUNNEL_GUARDIAN_BIN" "${args[@]}" >> "$TUNNEL_GUARDIAN_LOG" 2>&1 & fi
+  if [ "$TUNNEL_TEST_MODE" = "1" ]; then
+    "$TUNNEL_GUARDIAN_BIN" "${args[@]}" >> "$TUNNEL_GUARDIAN_LOG" 2>&1 &
+  else
+    sb=$(sudo_bin) || die "sudo is required for safe macOS System Proxy changes"
+    "$sb" -v || die "administrator authorization is required for System Proxy mode"
+    "$sb" -n /usr/bin/nohup "$TUNNEL_GUARDIAN_BIN" "${args[@]}" >> "$TUNNEL_GUARDIAN_LOG" 2>&1 &
+  fi
   deadline=$(( $(now_epoch) + GUARDIAN_START_TIMEOUT ))
   while [ "$(now_epoch)" -lt "$deadline" ]; do
-    if [ -f "$TUNNEL_PROXY_READY" ]; then ready_session=$(marker_get "$TUNNEL_PROXY_READY" SESSION ''); [ "$ready_session" = "$session" ] || die "guardian readiness marker belongs to a different session"; service=$(marker_get "$TUNNEL_PROXY_READY" SERVICE ''); write_state CONNECTED SYSTEM_PROXY "$pid" "$port" "$session" "$started" "$service"; log_line "session=$session state=CONNECTED mode=SYSTEM_PROXY service=$service"; info "System Proxy enabled safely for network service: $service"; info "Safari/Chrome and other apps that honor macOS System Proxy can now use the Snowflake route."; return 0; fi
-    if [ -f "$TUNNEL_PROXY_FAILED" ]; then reason=$(marker_get "$TUNNEL_PROXY_FAILED" REASON 'GUARDIAN_FAILURE'); err "SYSTEM_PROXY_FAILURE: $reason"; return 1; fi
+    if [ -f "$TUNNEL_PROXY_READY" ]; then
+      ready_session=$(marker_get "$TUNNEL_PROXY_READY" SESSION '')
+      [ "$ready_session" = "$session" ] || die "guardian readiness marker belongs to a different session"
+      service=$(marker_get "$TUNNEL_PROXY_READY" SERVICE '')
+      write_state CONNECTED SYSTEM_PROXY "$pid" "$port" "$session" "$started" "$service" "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
+      log_line "session=$session state=CONNECTED mode=SYSTEM_PROXY service=$service transport=$transport candidate=$candidate"
+      info "System Proxy enabled safely for network service: $service"
+      info "Proxy-aware macOS apps can now use the validated Tor route."
+      return 0
+    fi
+    if [ -f "$TUNNEL_PROXY_FAILED" ]; then
+      reason=$(marker_get "$TUNNEL_PROXY_FAILED" REASON 'GUARDIAN_FAILURE')
+      err "SYSTEM_PROXY_FAILURE: $reason"
+      return 1
+    fi
     sleep 0.25
   done
-  err "SYSTEM_PROXY_FAILURE: guardian did not become ready within ${GUARDIAN_START_TIMEOUT}s"; return 1
+  err "SYSTEM_PROXY_FAILURE: guardian did not become ready within ${GUARDIAN_START_TIMEOUT}s"
+  return 1
 }
 
 request_proxy_restore() {
-  session=$(state_get SESSION ''); [ -n "$session" ] || return 0; ensure_dirs
-  printf 'SESSION=%s\n' "$session" > "$TUNNEL_STOP_REQUEST"; chmod 600 "$TUNNEL_STOP_REQUEST" 2>/dev/null || true
+  session=$(state_get SESSION '')
+  [ -n "$session" ] || return 0
+  ensure_dirs
+  printf 'SESSION=%s\n' "$session" > "$TUNNEL_STOP_REQUEST"
+  chmod 600 "$TUNNEL_STOP_REQUEST" 2>/dev/null || true
   deadline=$(( $(now_epoch) + GUARDIAN_STOP_TIMEOUT ))
   while [ "$(now_epoch)" -lt "$deadline" ]; do
-    if [ -f "$TUNNEL_PROXY_RESTORED" ]; then restored_session=$(marker_get "$TUNNEL_PROXY_RESTORED" SESSION ''); [ "$restored_session" = "$session" ] && return 0; fi
-    if [ -f "$TUNNEL_PROXY_FAILED" ]; then reason=$(marker_get "$TUNNEL_PROXY_FAILED" REASON 'RESTORE_FAILURE'); warn "guardian restore reported: $reason"; break; fi
+    if [ -f "$TUNNEL_PROXY_RESTORED" ]; then
+      restored_session=$(marker_get "$TUNNEL_PROXY_RESTORED" SESSION '')
+      [ "$restored_session" = "$session" ] && return 0
+    fi
+    if [ -f "$TUNNEL_PROXY_FAILED" ]; then
+      reason=$(marker_get "$TUNNEL_PROXY_FAILED" REASON 'RESTORE_FAILURE')
+      warn "guardian restore reported: $reason"
+      break
+    fi
     sleep 0.25
   done
   [ -x "$TUNNEL_GUARDIAN_BIN" ] || return 1
@@ -323,59 +483,51 @@ request_proxy_restore() {
 }
 
 cmd_connect() {
-  mode="system"
-  service=""
-  if [ "${1:-}" = "socks" ]; then
-    mode="socks"
-    shift
-  elif [ "${1:-}" = "system" ]; then
-    mode="system"
-    shift
+  mode="system"; service=""; requested_transport="auto"; exit_policy="FOREIGN_ONLY"; exit_country=""
+  if [ "${1:-}" = "socks" ]; then mode="socks"; shift
+  elif [ "${1:-}" = "system" ]; then mode="system"; shift
   fi
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --service)
-        [ "$#" -ge 2 ] || die "--service requires a network service name"
-        service="$2"
-        shift 2
-        ;;
+      --service) [ "$#" -ge 2 ] || die "--service requires a network service name"; service="$2"; shift 2 ;;
+      --transport) [ "$#" -ge 2 ] || die "--transport requires auto|snowflake|meek|obfs4"; requested_transport="$2"; shift 2 ;;
+      --foreign-only) exit_policy="FOREIGN_ONLY"; shift ;;
+      --allow-any-exit) exit_policy="ANY"; shift ;;
+      --exit-country) [ "$#" -ge 2 ] || die "--exit-country requires a 2-letter country code"; exit_country=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]'); shift 2 ;;
       *) die "unknown connect option: $1" ;;
     esac
   done
+  validate_transport_name "$requested_transport" || die "--transport must be auto, snowflake, meek, or obfs4"
+  if [ -n "$exit_country" ]; then validate_country_code "$exit_country" || die "--exit-country must be a 2-letter ISO country code"; fi
+  if [ "$exit_policy" = "FOREIGN_ONLY" ] && [ "$exit_country" = "ir" ]; then die "foreign-only policy conflicts with --exit-country ir"; fi
 
-  existing_state=$(state_get STATE DISCONNECTED)
-  existing_mode=$(state_get MODE NONE)
-  existing_pid=$(state_get PID '')
+  existing_state=$(state_get STATE DISCONNECTED); existing_mode=$(state_get MODE NONE); existing_pid=$(state_get PID '')
   if [ "$existing_state" = "CONNECTED" ] && pid_is_owned "$existing_pid"; then
-    case "$mode:$existing_mode" in
-      system:SYSTEM_PROXY)
-        if [ -f "$TUNNEL_PROXY_FAILED" ]; then
-          die "existing System Proxy session is degraded; run 'devfix-tunnel status' and 'devfix-tunnel repair'"
-        fi
-        info "DevFix Tunnel is already connected in System Proxy mode."
-        return 0
-        ;;
-      socks:SOCKS)
-        info "DevFix Tunnel is already connected in SOCKS-only mode."
-        return 0
-        ;;
-      socks:SYSTEM_PROXY)
-        die "already connected in System Proxy mode; disconnect before switching to SOCKS-only mode"
-        ;;
-      system:SOCKS)
-        die "already connected in SOCKS-only mode; disconnect before switching to System Proxy mode"
-        ;;
-    esac
+    existing_requested=$(state_get REQUESTED_TRANSPORT auto); existing_policy=$(state_get EXIT_POLICY FOREIGN_ONLY); existing_country=$(state_get EXIT_COUNTRY '')
+    requested_mode_name=SOCKS; [ "$mode" = "system" ] && requested_mode_name=SYSTEM_PROXY
+    if [ "$requested_mode_name" != "$existing_mode" ]; then
+      if [ "$mode" = "socks" ]; then die "already connected in System Proxy mode; disconnect before switching to SOCKS-only mode"; fi
+      die "already connected in SOCKS-only mode; disconnect before switching to System Proxy mode"
+    fi
+    if [ "$requested_transport" != "auto" ] && [ "$requested_transport" != "$existing_requested" ]; then die "connected session uses different transport policy; disconnect before changing transport"; fi
+    if [ "$exit_policy" != "$existing_policy" ] || [ "$exit_country" != "$existing_country" ]; then die "connected session uses different exit policy; disconnect before changing exit policy"; fi
+    if [ "$existing_mode" = "SYSTEM_PROXY" ]; then
+      [ ! -f "$TUNNEL_PROXY_FAILED" ] || die "existing System Proxy session is degraded; run status and repair"
+      info "DevFix Tunnel is already connected in System Proxy mode."
+    else
+      info "DevFix Tunnel is already connected in SOCKS-only mode."
+    fi
+    return 0
   fi
 
   if [ "$mode" = "socks" ]; then
-    start_transport SOCKS || exit 1
+    start_transport SOCKS "$requested_transport" "$exit_policy" "$exit_country" || return 1
     info "Connected in SOCKS-only mode. macOS System Proxy was not changed."
     return 0
   fi
 
-  start_transport SYSTEM_PROXY || exit 1
+  start_transport SYSTEM_PROXY "$requested_transport" "$exit_policy" "$exit_country" || return 1
   if ! start_system_proxy_guardian "$service"; then
     pid=$(state_get PID '')
     stop_owned_tor "$pid" || true
@@ -386,67 +538,185 @@ cmd_connect() {
 }
 
 cmd_status() {
-  state=$(state_get STATE DISCONNECTED); mode=$(state_get MODE NONE); pid=$(state_get PID ''); port=$(state_get SOCKS_PORT ''); session=$(state_get SESSION ''); service=$(state_get PROXY_SERVICE '')
-  printf '%s %s\n' "$TUNNEL_NAME" "$TUNNEL_VERSION"; printf 'State: %s\n' "$state"; printf 'Mode: %s\n' "$mode"
-  [ -n "$session" ] && printf 'Session: %s\n' "$session"; [ -n "$port" ] && printf 'SOCKS: socks5h://127.0.0.1:%s\n' "$port"; [ -n "$service" ] && printf 'System Proxy service: %s\n' "$service"
-  if [ -n "$pid" ]; then if pid_is_owned "$pid"; then printf 'Tor PID: %s (owned/alive)\n' "$pid"; elif is_pid_alive "$pid"; then printf 'Tor PID: %s (alive, ownership NOT proven)\n' "$pid"; else printf 'Tor PID: %s (not alive)\n' "$pid"; fi; fi
+  state=$(state_get STATE DISCONNECTED); mode=$(state_get MODE NONE); pid=$(state_get PID ''); port=$(state_get SOCKS_PORT '')
+  session=$(state_get SESSION ''); service=$(state_get PROXY_SERVICE ''); transport=$(state_get TRANSPORT ''); candidate=$(state_get CANDIDATE '')
+  requested_transport=$(state_get REQUESTED_TRANSPORT ''); exit_policy=$(state_get EXIT_POLICY ''); exit_country=$(state_get EXIT_COUNTRY '')
+  printf '%s %s\n' "$TUNNEL_NAME" "$TUNNEL_VERSION"
+  printf 'State: %s\n' "$state"; printf 'Mode: %s\n' "$mode"
+  [ -n "$session" ] && printf 'Session: %s\n' "$session"
+  [ -n "$port" ] && printf 'SOCKS: socks5h://127.0.0.1:%s\n' "$port"
+  [ -n "$transport" ] && printf 'Transport: %s (candidate %s; requested %s)\n' "$transport" "${candidate:-?}" "${requested_transport:-?}"
+  [ -n "$exit_policy" ] && printf 'Exit policy: %s\n' "$exit_policy"
+  [ -n "$exit_country" ] && printf 'Preferred exit country: %s\n' "$exit_country"
+  [ -n "$service" ] && printf 'System Proxy service: %s\n' "$service"
+  if [ -n "$pid" ]; then
+    if pid_is_owned "$pid"; then printf 'Tor PID: %s (owned/alive)\n' "$pid"
+    elif is_pid_alive "$pid"; then printf 'Tor PID: %s (alive, ownership NOT proven)\n' "$pid"
+    else printf 'Tor PID: %s (not alive)\n' "$pid"
+    fi
+  fi
   if [ -f "$TUNNEL_PROXY_FAILED" ]; then printf 'Guardian: DEGRADED (%s)\n' "$(marker_get "$TUNNEL_PROXY_FAILED" REASON unknown)"; return 1; fi
   if [ "$state" = "CONNECTED" ] && ! pid_is_owned "$pid"; then printf 'Health: DEGRADED\n'; return 1; fi
   if [ "$mode" = "SYSTEM_PROXY" ] && [ ! -f "$TUNNEL_PROXY_READY" ]; then printf 'System Proxy health: NOT VERIFIED\n'; return 1; fi
-  [ "$state" = "CONNECTED" ] && printf 'Health: OK\n'; return 0
+  [ "$state" = "CONNECTED" ] && printf 'Health: OK\n'
+  return 0
 }
 
 cmd_disconnect() {
   mode=$(state_get MODE NONE); pid=$(state_get PID ''); session=$(state_get SESSION '')
-  if [ "$mode" = "SYSTEM_PROXY" ] || [ -f "$TUNNEL_PROXY_READY" ]; then info "Restoring previous macOS proxy settings..."; if ! request_proxy_restore; then err "RESTORE_FAILURE: automatic System Proxy restoration could not be verified."; err "Run: devfix-tunnel repair"; exit 1; fi; fi
+  if [ "$mode" = "SYSTEM_PROXY" ] || [ -f "$TUNNEL_PROXY_READY" ]; then
+    info "Restoring previous macOS proxy settings..."
+    if ! request_proxy_restore; then err "RESTORE_FAILURE: automatic System Proxy restoration could not be verified."; err "Run: devfix-tunnel repair"; return 1; fi
+  fi
   if [ -n "$pid" ] && is_pid_alive "$pid"; then stop_owned_tor "$pid" || die "could not safely stop tunnel-owned Tor process"; fi
-  clear_runtime_state; log_line "session=$session state=DISCONNECTED"; info "DevFix Tunnel disconnected."; info "Previous System Proxy state restored or no tunnel-owned proxy was active."
+  clear_runtime_state
+  log_line "session=$session state=DISCONNECTED"
+  info "DevFix Tunnel disconnected."
+  info "Previous System Proxy state restored or no tunnel-owned proxy was active."
 }
-
 
 cmd_restart() {
-  requested="${1:-}"
-  if [ -z "$requested" ]; then
+  requested_mode="${1:-}"
+  if [ -n "$requested_mode" ]; then shift; fi
+  if [ -z "$requested_mode" ]; then
     current_mode=$(state_get MODE NONE)
-    case "$current_mode" in
-      SOCKS) requested="socks" ;;
-      SYSTEM_PROXY) requested="system" ;;
-      *) requested="system" ;;
-    esac
+    case "$current_mode" in SOCKS) requested_mode="socks" ;; SYSTEM_PROXY) requested_mode="system" ;; *) requested_mode="system" ;; esac
   fi
-  case "$requested" in
-    system|socks) ;;
-    *) die "restart mode must be 'system' or 'socks'" ;;
-  esac
+  case "$requested_mode" in system|socks) ;; *) die "restart mode must be system or socks" ;; esac
+  requested_transport=$(state_get REQUESTED_TRANSPORT auto)
+  exit_policy=$(state_get EXIT_POLICY FOREIGN_ONLY)
+  exit_country=$(state_get EXIT_COUNTRY '')
   cmd_disconnect || return 1
-  cmd_connect "$requested"
+  args=("$requested_mode" --transport "$requested_transport")
+  [ "$exit_policy" = "ANY" ] && args+=(--allow-any-exit) || args+=(--foreign-only)
+  [ -n "$exit_country" ] && args+=(--exit-country "$exit_country")
+  cmd_connect "${args[@]}"
 }
+
 cmd_repair() {
   ensure_dirs; session=$(state_get SESSION '')
-  if [ -x "$TUNNEL_GUARDIAN_BIN" ]; then args=(recover --user-state "$TUNNEL_STATE_ROOT" --uid "$(id -u)" --gid "$(id -g)"); [ -n "$session" ] && args+=(--session "$session"); if [ "$TUNNEL_TEST_MODE" = "1" ]; then "$TUNNEL_GUARDIAN_BIN" "${args[@]}" || true; elif [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then sb=$(sudo_bin) || die "sudo is required for repair"; "$sb" "$TUNNEL_GUARDIAN_BIN" "${args[@]}" || die "guardian could not safely repair System Proxy state"; fi; fi
-  pid=$(state_get PID ''); if [ -n "$pid" ] && is_pid_alive "$pid"; then stop_owned_tor "$pid" || die "refusing to stop unowned process during repair"; fi
-  clear_runtime_state; info "DevFix Tunnel repair completed."
+  if [ -x "$TUNNEL_GUARDIAN_BIN" ]; then
+    args=(recover --user-state "$TUNNEL_STATE_ROOT" --uid "$(id -u)" --gid "$(id -g)")
+    [ -n "$session" ] && args+=(--session "$session")
+    if [ "$TUNNEL_TEST_MODE" = "1" ]; then "$TUNNEL_GUARDIAN_BIN" "${args[@]}" || true
+    elif [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then sb=$(sudo_bin) || die "sudo is required for repair"; "$sb" "$TUNNEL_GUARDIAN_BIN" "${args[@]}" || die "guardian could not safely repair System Proxy state"
+    fi
+  fi
+  pid=$(state_get PID '')
+  if [ -n "$pid" ] && is_pid_alive "$pid"; then stop_owned_tor "$pid" || die "refusing to stop unowned process during repair"; fi
+  clear_runtime_state
+  info "DevFix Tunnel repair completed."
 }
 
 cmd_doctor() {
-  fail=0; printf '%s %s doctor\n' "$TUNNEL_NAME" "$TUNNEL_VERSION"; printf 'OS: %s\n' "$(uname -s 2>/dev/null || printf unknown)"; printf 'Architecture: %s\n' "$(uname -m 2>/dev/null || printf unknown)"
+  fail=0
+  printf '%s %s doctor\n' "$TUNNEL_NAME" "$TUNNEL_VERSION"
+  printf 'OS: %s\n' "$(uname -s 2>/dev/null || printf unknown)"
+  printf 'Architecture: %s\n' "$(uname -m 2>/dev/null || printf unknown)"
   if [ -x "$TUNNEL_TOR_BIN" ]; then printf 'Tor runtime: OK (%s)\n' "$TUNNEL_TOR_BIN"; else printf 'Tor runtime: MISSING (%s)\n' "$TUNNEL_TOR_BIN"; fail=1; fi
   if [ -x "$TUNNEL_LYREBIRD_BIN" ]; then printf 'lyrebird runtime: OK\n'; else printf 'lyrebird runtime: MISSING\n'; fail=1; fi
+  if [ -f "$TUNNEL_TRANSPORT_CATALOG" ]; then
+    sf_count=$(catalog_candidates snowflake 2>/dev/null | wc -l | tr -d ' ')
+    meek_count=$(catalog_candidates meek 2>/dev/null | wc -l | tr -d ' ')
+    obfs_count=$(catalog_candidates obfs4 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$sf_count" -ge 2 ] && [ "$meek_count" -ge 1 ] && [ "$obfs_count" -ge 1 ]; then printf 'Transport catalog: OK (snowflake=%s meek=%s obfs4=%s)\n' "$sf_count" "$meek_count" "$obfs_count"; else printf 'Transport catalog: INCOMPLETE\n'; fail=1; fi
+  else printf 'Transport catalog: MISSING (%s)\n' "$TUNNEL_TRANSPORT_CATALOG"; fail=1; fi
+  [ -f "$TUNNEL_GEOIP" ] && printf 'GeoIP IPv4: OK\n' || { printf 'GeoIP IPv4: MISSING\n'; fail=1; }
+  [ -f "$TUNNEL_GEOIP6" ] && printf 'GeoIP IPv6: OK\n' || { printf 'GeoIP IPv6: MISSING\n'; fail=1; }
   if [ -x "$TUNNEL_GUARDIAN_BIN" ]; then printf 'System Proxy guardian: OK\n'; else printf 'System Proxy guardian: MISSING (%s)\n' "$TUNNEL_GUARDIAN_BIN"; fail=1; fi
-  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then if [ -x /usr/sbin/networksetup ]; then printf 'networksetup: OK\n'; else printf 'networksetup: MISSING\n'; fail=1; fi; if [ -x /sbin/route ]; then printf 'route: OK\n'; else printf 'route: MISSING\n'; fail=1; fi; if sudo_bin >/dev/null 2>&1; then printf 'sudo: OK\n'; else printf 'sudo: MISSING\n'; fail=1; fi; else printf 'System Proxy support: N/A outside macOS\n'; fi
-  printf 'Current state: %s\n' "$(state_get STATE DISCONNECTED)"; [ "$fail" -eq 0 ]
+  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
+    [ -x /usr/sbin/networksetup ] && printf 'networksetup: OK\n' || { printf 'networksetup: MISSING\n'; fail=1; }
+    [ -x /sbin/route ] && printf 'route: OK\n' || { printf 'route: MISSING\n'; fail=1; }
+    if sudo_bin >/dev/null 2>&1; then printf 'sudo: OK\n'; else printf 'sudo: MISSING\n'; fail=1; fi
+  else printf 'System Proxy support: N/A outside macOS\n'
+  fi
+  printf 'Current state: %s\n' "$(state_get STATE DISCONNECTED)"
+  [ "$fail" -eq 0 ]
 }
 
-cmd_open() { url="${1:-}"; [ -n "$url" ] || die "usage: devfix-tunnel open https://example.com"; case "$url" in http://*|https://*) ;; *) die "open accepts only http:// or https:// URLs" ;; esac; [ "$(state_get STATE DISCONNECTED)" = "CONNECTED" ] || die "tunnel is not connected"; [ "$(state_get MODE NONE)" = "SYSTEM_PROXY" ] || die "open requires System Proxy mode"; if [ "$TUNNEL_TEST_MODE" = "1" ]; then info "TEST open: $url"; return 0; fi; [ -x /usr/bin/open ] || die "macOS open command not found"; /usr/bin/open "$url"; }
+ipv4_to_int() {
+  ip="$1"
+  old_ifs=$IFS; IFS=.; set -- $ip; IFS=$old_ifs
+  [ "$#" -eq 4 ] || return 1
+  for octet in "$@"; do case "$octet" in ''|*[!0-9]*) return 1 ;; esac; [ "$octet" -le 255 ] || return 1; done
+  printf '%s' $(( $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 ))
+}
 
-cmd_logs() { ensure_dirs; lines="${1:-100}"; case "$lines" in ''|*[!0-9]*) die "logs expects a numeric line count" ;; esac; printf '%s\n' '===== controller ====='; tail -n "$lines" "$TUNNEL_LOG" 2>/dev/null || true; printf '%s\n' '===== tor ====='; tail -n "$lines" "$TUNNEL_TOR_LOG" 2>/dev/null || true; printf '%s\n' '===== guardian launcher ====='; tail -n "$lines" "$TUNNEL_GUARDIAN_LOG" 2>/dev/null || true; }
+geoip_country_ipv4() {
+  ip="$1"; n=$(ipv4_to_int "$ip") || return 1
+  awk -F',' -v n="$n" '$1 !~ /^#/ && $1 <= n && n <= $2 {gsub(/"/, "", $3); print tolower($3); exit}' "$TUNNEL_GEOIP"
+}
+
+cmd_exit() {
+  [ "$(state_get STATE DISCONNECTED)" = "CONNECTED" ] || die "tunnel is not connected"
+  port=$(state_get SOCKS_PORT '')
+  [ -n "$port" ] || die "connected state has no SOCKS port"
+  if [ "$TUNNEL_TEST_MODE" = "1" ]; then
+    ip="${DEVFIX_TUNNEL_TEST_EXIT_IP:-203.0.113.9}"; is_tor=true
+  else
+    cb=$(curl_bin) || die "curl not found"
+    body=$("$cb" -fsS --proxy "socks5h://127.0.0.1:$port" --connect-timeout 10 --max-time "$VALIDATION_TIMEOUT" "$TOR_CHECK_URL") || die "Tor Check request failed"
+    is_tor=$(printf '%s' "$body" | sed -nE 's/.*"IsTor"[[:space:]]*:[[:space:]]*(true|false).*/\1/p' | head -n 1)
+    ip=$(printf '%s' "$body" | sed -nE 's/.*"IP"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n 1)
+  fi
+  [ "$is_tor" = "true" ] || die "Tor Check did not confirm this route as Tor"
+  [ -n "$ip" ] || die "Tor Check did not return an exit IP"
+  cc=""
+  case "$ip" in *:*) cc="" ;; *) cc=$(geoip_country_ipv4 "$ip" 2>/dev/null || true) ;; esac
+  policy=$(state_get EXIT_POLICY FOREIGN_ONLY)
+  printf 'Tor exit IP: %s\n' "$ip"
+  if [ -n "$cc" ]; then printf 'Exit country: %s\n' "$cc"; else printf 'Exit country: unknown\n'; fi
+  printf 'Exit policy: %s\n' "$policy"
+  if [ "$policy" = "FOREIGN_ONLY" ]; then
+    if [ "$cc" = "ir" ] || [ -z "$cc" ]; then printf 'Foreign-only verification: FAIL/UNKNOWN\n'; return 1; fi
+    printf 'Foreign-only verification: PASS\n'
+  fi
+}
+
+cmd_run() {
+  [ "$#" -ge 1 ] || die "usage: devfix-tunnel run <command> [args...]"
+  [ "$(state_get STATE DISCONNECTED)" = "CONNECTED" ] || die "tunnel is not connected"
+  port=$(state_get SOCKS_PORT '')
+  [ -n "$port" ] || die "connected state has no SOCKS port"
+  proxy="socks5h://127.0.0.1:$port"
+  ALL_PROXY="$proxy" all_proxy="$proxy" "$@"
+}
+
+cmd_open() {
+  url="${1:-}"
+  [ -n "$url" ] || die "usage: devfix-tunnel open https://example.com"
+  case "$url" in http://*|https://*) ;; *) die "open accepts only http:// or https:// URLs" ;; esac
+  [ "$(state_get STATE DISCONNECTED)" = "CONNECTED" ] || die "tunnel is not connected"
+  [ "$(state_get MODE NONE)" = "SYSTEM_PROXY" ] || die "open requires System Proxy mode"
+  if [ "$TUNNEL_TEST_MODE" = "1" ]; then info "TEST open: $url"; return 0; fi
+  [ -x /usr/bin/open ] || die "macOS open command not found"
+  /usr/bin/open "$url"
+}
+
+cmd_logs() {
+  ensure_dirs
+  lines="${1:-100}"; case "$lines" in ''|*[!0-9]*) die "logs expects a numeric line count" ;; esac
+  printf '%s\n' '===== controller ====='
+  tail -n "$lines" "$TUNNEL_LOG" 2>/dev/null || true
+  printf '%s\n' '===== transport attempts (newest first) ====='
+  count=0
+  for file in $(ls -1t "$TUNNEL_LOG_DIR"/attempt-*.log 2>/dev/null || true); do
+    printf '%s\n' "===== $(basename "$file") ====="
+    tail -n "$lines" "$file" 2>/dev/null || true
+    count=$((count + 1)); [ "$count" -ge 5 ] && break
+  done
+  printf '%s\n' '===== guardian launcher ====='
+  tail -n "$lines" "$TUNNEL_GUARDIAN_LOG" 2>/dev/null || true
+}
 
 usage() { cat <<EOF
 $TUNNEL_NAME $TUNNEL_VERSION
 
 Usage:
-  devfix-tunnel connect [system|socks] [--service "Network Service"]
+  devfix-tunnel connect [system|socks] [options]
   devfix-tunnel status
+  devfix-tunnel exit
+  devfix-tunnel run <command> [args...]
   devfix-tunnel disconnect
   devfix-tunnel restart [system|socks]
   devfix-tunnel repair
@@ -454,27 +724,38 @@ Usage:
   devfix-tunnel open https://example.com
   devfix-tunnel logs [lines]
   devfix-tunnel version
-  devfix-tunnel help
+
+Connect options:
+  --transport auto|snowflake|meek|obfs4
+  --foreign-only              Exclude Iran and unknown-country exits (default)
+  --allow-any-exit            Disable foreign-only exit exclusion
+  --exit-country CC           Prefer a two-letter Tor exit country
+  --service "Network Service" Override active macOS network service
 
 Modes:
-  system  Start Snowflake and safely enable macOS System SOCKS Proxy.
-          This is the default and targets Safari/Chrome plus other apps
-          that honor macOS System Proxy settings.
-  socks   Start only an isolated local SOCKS endpoint. No macOS network settings are changed.
+  system  Validated Tor route + safe macOS System SOCKS Proxy. Targets Safari,
+          Chrome, VS Code/Electron and other apps that honor System Proxy.
+  socks   Validated local SOCKS only. No macOS network settings are changed.
+
+Transport policy:
+  auto    Uses the current Tor Expert Bundle catalog and falls back across
+          Snowflake, meek_lite and bounded obfs4 candidates.
 
 Safety:
+  - System Proxy is never enabled before Tor bootstrap 100% + HTTPS validation.
   - DevFix and DevFix Tunnel use separate runtime/state paths.
   - Existing third-party proxy/PAC settings cause a fail-closed stop.
   - Proxy changes are owned by a root guardian with snapshot/restore.
-  - A boot recovery LaunchDaemon restores stale tunnel-owned proxy state.
   - External proxy changes are never blindly overwritten.
-  - This System Proxy edition is not a full packet-level VPN.
+  - This edition is not a packet-level full-device VPN.
 EOF
 }
 
 case "${1:-help}" in
   connect) shift; cmd_connect "$@" ;;
   status) shift; cmd_status "$@" ;;
+  exit) shift; cmd_exit "$@" ;;
+  run) shift; cmd_run "$@" ;;
   disconnect) shift; cmd_disconnect "$@" ;;
   restart) shift; cmd_restart "$@" ;;
   repair) shift; cmd_repair "$@" ;;
