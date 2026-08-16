@@ -79,15 +79,23 @@ pass "isolated Chrome starts SOCKS route and receives leak-reduction flags"
 grep -Fxq -- 'https://check.torproject.org/' "$CHROME_LOG" || fail "second URL missing"
 pass "isolated Chrome reuses compatible healthy route without global proxy mutation"
 
-FAKE_TUNNEL_HEALTH=DEGRADED /bin/bash "$LAUNCHER" 'https://example.com/' > "$TMP/degraded.out" 2>&1 && fail "launcher reused degraded route"
+if FAKE_TUNNEL_HEALTH=DEGRADED /bin/bash "$LAUNCHER" 'https://example.com/' > "$TMP/degraded.out" 2>&1; then
+  fail "launcher reused degraded route"
+fi
 grep -q 'existing DevFix Tunnel session is not healthy' "$TMP/degraded.out" || fail "degraded-route classification missing"
 pass "isolated Chrome refuses degraded connected route"
 
-FAKE_TUNNEL_POLICY=ANY /bin/bash "$LAUNCHER" 'https://example.com/' > "$TMP/policy.out" 2>&1 && fail "launcher reused incompatible ANY exit policy"
+if FAKE_TUNNEL_POLICY=ANY /bin/bash "$LAUNCHER" 'https://example.com/' > "$TMP/policy.out" 2>&1; then
+  fail "launcher reused incompatible ANY exit policy"
+fi
 grep -q 'existing tunnel uses exit policy ANY, requested FOREIGN_ONLY' "$TMP/policy.out" || fail "exit-policy mismatch classification missing"
 pass "isolated Chrome refuses incompatible existing exit policy"
 
-FAKE_TUNNEL_COUNTRY=nl /bin/bash "$LAUNCHER" --exit-country de 'https://example.com/' > "$TMP/country.out" 2>&1 && fail "launcher reused wrong preferred country"
+export FAKE_TUNNEL_COUNTRY=nl
+if /bin/bash "$LAUNCHER" --exit-country de 'https://example.com/' > "$TMP/country.out" 2>&1; then
+  fail "launcher reused wrong preferred country"
+fi
+unset FAKE_TUNNEL_COUNTRY
 grep -q 'does not use requested exit country de' "$TMP/country.out" || fail "country mismatch classification missing"
 pass "isolated Chrome refuses incompatible preferred exit country"
 
