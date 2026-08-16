@@ -621,12 +621,12 @@ cmd_doctor() {
     obfs_count=$(catalog_candidates obfs4 2>/dev/null | wc -l | tr -d ' ')
     if [ "$sf_count" -ge 2 ] && [ "$meek_count" -ge 1 ] && [ "$obfs_count" -ge 1 ]; then printf 'Transport catalog: OK (snowflake=%s meek=%s obfs4=%s)\n' "$sf_count" "$meek_count" "$obfs_count"; else printf 'Transport catalog: INCOMPLETE\n'; fail=1; fi
   else printf 'Transport catalog: MISSING (%s)\n' "$TUNNEL_TRANSPORT_CATALOG"; fail=1; fi
-  [ -f "$TUNNEL_GEOIP" ] && printf 'GeoIP IPv4: OK\n' || { printf 'GeoIP IPv4: MISSING\n'; fail=1; }
-  [ -f "$TUNNEL_GEOIP6" ] && printf 'GeoIP IPv6: OK\n' || { printf 'GeoIP IPv6: MISSING\n'; fail=1; }
+  if [ -f "$TUNNEL_GEOIP" ]; then printf 'GeoIP IPv4: OK\n'; else printf 'GeoIP IPv4: MISSING\n'; fail=1; fi
+  if [ -f "$TUNNEL_GEOIP6" ]; then printf 'GeoIP IPv6: OK\n'; else printf 'GeoIP IPv6: MISSING\n'; fail=1; fi
   if [ -x "$TUNNEL_GUARDIAN_BIN" ]; then printf 'System Proxy guardian: OK\n'; else printf 'System Proxy guardian: MISSING (%s)\n' "$TUNNEL_GUARDIAN_BIN"; fail=1; fi
   if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
-    [ -x /usr/sbin/networksetup ] && printf 'networksetup: OK\n' || { printf 'networksetup: MISSING\n'; fail=1; }
-    [ -x /sbin/route ] && printf 'route: OK\n' || { printf 'route: MISSING\n'; fail=1; }
+    if [ -x /usr/sbin/networksetup ]; then printf 'networksetup: OK\n'; else printf 'networksetup: MISSING\n'; fail=1; fi
+    if [ -x /sbin/route ]; then printf 'route: OK\n'; else printf 'route: MISSING\n'; fail=1; fi
     if sudo_bin >/dev/null 2>&1; then printf 'sudo: OK\n'; else printf 'sudo: MISSING\n'; fail=1; fi
   else printf 'System Proxy support: N/A outside macOS\n'
   fi
@@ -636,10 +636,18 @@ cmd_doctor() {
 
 ipv4_to_int() {
   ip="$1"
-  old_ifs=$IFS; IFS=.; set -- $ip; IFS=$old_ifs
-  [ "$#" -eq 4 ] || return 1
-  for octet in "$@"; do case "$octet" in ''|*[!0-9]*) return 1 ;; esac; [ "$octet" -le 255 ] || return 1; done
-  printf '%s' $(( $1 * 16777216 + $2 * 65536 + $3 * 256 + $4 ))
+  old_ifs=$IFS
+  IFS=.
+  read -r a b c d extra <<EOF
+$ip
+EOF
+  IFS=$old_ifs
+  [ -z "${extra:-}" ] || return 1
+  for octet in "$a" "$b" "$c" "$d"; do
+    case "$octet" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$octet" -le 255 ] || return 1
+  done
+  printf '%s' $(( a * 16777216 + b * 65536 + c * 256 + d ))
 }
 
 geoip_country_ipv4() {
