@@ -36,6 +36,7 @@ jobs:
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getautoproxyurl"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getproxyautodiscovery"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-listnetworkserviceorder"
+          sudo -n -u "#$(id -u)" /usr/bin/true
       - run: bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tests/test_devfix_tunnel.sh
       - run: bash tests/test_devfix_tunnel.sh
 
