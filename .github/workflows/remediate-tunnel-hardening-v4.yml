@@ -1,0 +1,42 @@
+name: Remediate Tunnel Hardening V4
+
+on:
+  push:
+    branches: [feature/devfix-tunnel]
+    paths:
+      - ".github/bootstrap/remediate-tunnel-hardening-v4.trigger"
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply deterministic V4 hardening
+        run: python3 scripts/remediate_tunnel_hardening_v4.py
+
+      - name: Syntax and ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh
+          shellcheck -x tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh
+
+      - name: Run full Tunnel integration matrix
+        run: bash tests/test_devfix_tunnel.sh
+
+      - name: Commit hardening and remove one-shot infrastructure
+        run: |
+          rm -f .github/bootstrap/remediate-tunnel-hardening-v4.trigger
+          rm -f .github/workflows/remediate-tunnel-hardening-v4.yml
+          rm -f scripts/remediate_tunnel_hardening_v4.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tunnel tests/test_devfix_tunnel.sh .github/workflows/tunnel-ci.yml docs/tunnel/remediations .github/bootstrap .github/workflows scripts
+          git commit -m "fix(tunnel): harden mode and privilege boundaries"
+          git push origin HEAD:feature/devfix-tunnel
