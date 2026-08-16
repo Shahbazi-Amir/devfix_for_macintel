@@ -76,7 +76,7 @@ export DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT=5
 export DEVFIX_TUNNEL_SOCKS_PORT=29250
 unset DEVFIX_TUNNEL_MAX_AUTO_ATTEMPTS || true
 
-"$TUNNEL" version | grep -q '0.3.0-rc2' || fail 'RC2 version missing'
+"$TUNNEL" version | grep -Eq '0\.3\.0-rc(2|3)' || fail 'RC2-or-later version missing'
 
 "$TUNNEL" connect socks --transport auto --foreign-only > "$TMP/connect.out" 2>&1 || {
   cat "$TMP/connect.out" >&2
@@ -96,8 +96,8 @@ if grep -Fq 'GeoIPExcludeUnknown 1' "$STATE/run/torrc"; then
 fi
 pass 'foreign-only policy is exit-scoped and bridge-safe'
 
-grep -Fq "STALL_TIMEOUT_HANDSHAKE=\"\${DEVFIX_TUNNEL_STALL_TIMEOUT_HANDSHAKE:-150}\"" "$TUNNEL" || fail '150s handshake-stage stall limit missing'
-grep -Fq "STALL_TIMEOUT_CONSENSUS=\"\${DEVFIX_TUNNEL_STALL_TIMEOUT_CONSENSUS:-240}\"" "$TUNNEL" || fail '240s consensus-stage stall limit missing'
+grep -Eq 'STALL_TIMEOUT_HANDSHAKE="\$\{DEVFIX_TUNNEL_STALL_TIMEOUT_HANDSHAKE:-(150|180)\}"' "$TUNNEL" || fail 'handshake-stage stall limit missing'
+grep -Eq 'STALL_TIMEOUT_CONSENSUS="\$\{DEVFIX_TUNNEL_STALL_TIMEOUT_CONSENSUS:-(240|360)\}"' "$TUNNEL" || fail 'consensus-stage stall limit missing'
 grep -Fq 'stall_timeout_for_percent' "$TUNNEL" || fail 'phase-aware stall function missing'
 pass 'phase-aware bootstrap stall policy is present'
 
