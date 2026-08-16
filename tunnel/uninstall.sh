@@ -11,5 +11,5 @@ if [ -x "$GUARDIAN" ]; then "$GUARDIAN" recover || { echo "Refusing uninstall be
 /bin/launchctl unload -w "$PLIST" >/dev/null 2>&1 || true
 rm -f "$PLIST" "$PREFIX/bin/devfix-tunnel"
 rm -rf "$PREFIX/libexec/devfix-tunnel" "$PREFIX/share/devfix-tunnel"
-if [ "$PURGE" -eq 1 ]; then rm -rf "/Library/Application Support/DevFixTunnel"; for home in /Users/*; do [ -d "$home/Library/Application Support/DevFixTunnel" ] && rm -rf "$home/Library/Application Support/DevFixTunnel" || true; [ -d "$home/Library/Logs/DevFixTunnel" ] && rm -rf "$home/Library/Logs/DevFixTunnel" || true; done; fi
+if [ "$PURGE" -eq 1 ]; then rm -rf "/Library/Application Support/DevFixTunnel"; for home in /Users/*; do if [ -d "$home/Library/Application Support/DevFixTunnel" ]; then rm -rf "$home/Library/Application Support/DevFixTunnel"; fi; if [ -d "$home/Library/Logs/DevFixTunnel" ]; then rm -rf "$home/Library/Logs/DevFixTunnel"; fi; done; fi
 echo "DevFix Tunnel removed."

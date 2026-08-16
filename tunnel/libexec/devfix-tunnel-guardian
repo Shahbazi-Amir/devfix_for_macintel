@@ -41,29 +41,174 @@ apply_owned_proxy() { service="$1"; port="$2"; ns_set -setsocksfirewallproxy "$s
 restore_snapshot() { service="$1"; snapshot="$2"; previous=$(cat "$snapshot/socks"); previous_enabled=$(proxy_field "$previous" Enabled); previous_server=$(proxy_field "$previous" Server); previous_port=$(proxy_field "$previous" Port); if [ -n "$previous_server" ] && case "$previous_port" in ''|*[!0-9]*) false ;; *) true ;; esac; then ns_set -setsocksfirewallproxy "$service" "$previous_server" "$previous_port" off >/dev/null || return 1; fi; case "$previous_enabled" in Yes) ns_set -setsocksfirewallproxystate "$service" on >/dev/null || return 1 ;; *) ns_set -setsocksfirewallproxystate "$service" off >/dev/null || return 1 ;; esac; after=$(current_socks "$service") || return 1; after_enabled=$(proxy_field "$after" Enabled); if [ "$previous_enabled" = "Yes" ]; then [ "$after_enabled" = "Yes" ]; else [ "$after_enabled" != "Yes" ]; fi; }
 clear_owner_after_restore() { snapshot="$1"; if [ -d "$snapshot" ]; then rm -rf "$SYSTEM_STATE_DIR/last-restored"; mv "$snapshot" "$SYSTEM_STATE_DIR/last-restored" 2>/dev/null || rm -rf "$snapshot"; fi; rm -f "$CURRENT_FILE"; }
 
-recover_owned_proxy() { requested_session="${1:-}"; marker_user_state="${2:-}"; marker_uid="${3:-}"; marker_gid="${4:-}"; [ -f "$CURRENT_FILE" ] || { [ -n "$marker_user_state" ] && safe_user_marker "$marker_user_state" "system-proxy.restored" "SESSION=${requested_session:-none}
-RESULT=NO_OWNED_PROXY" "$marker_uid" "$marker_gid" || true; return 0; }; session=$(owner_get SESSION ''); phase=$(owner_get PHASE ''); service=$(owner_get SERVICE ''); port=$(owner_get PORT ''); user_state=$(owner_get USER_STATE "$marker_user_state"); uid=$(owner_get UID "$marker_uid"); gid=$(owner_get GID "$marker_gid"); snapshot=$(owner_get SNAPSHOT ''); if [ -n "$requested_session" ] && [ "$session" != "$requested_session" ]; then log_line "recover_refused requested=$requested_session owned=$session reason=SESSION_MISMATCH"; return 2; fi; case "$phase" in SNAPSHOTTED) rm -f "$CURRENT_FILE"; [ -d "$snapshot" ] && rm -rf "$snapshot"; safe_user_marker "$user_state" "system-proxy.restored" "SESSION=$session
-RESULT=SNAPSHOT_ONLY_CLEARED" "$uid" "$gid" || true; return 0 ;; APPLIED) if proxy_matches_owned "$service" "$port"; then if restore_snapshot "$service" "$snapshot"; then clear_owner_after_restore "$snapshot"; safe_user_marker "$user_state" "system-proxy.restored" "SESSION=$session
+recover_owned_proxy() {
+  requested_session="${1:-}"
+  marker_user_state="${2:-}"
+  marker_uid="${3:-}"
+  marker_gid="${4:-}"
+
+  if [ ! -f "$CURRENT_FILE" ]; then
+    if [ -n "$marker_user_state" ]; then
+      safe_user_marker "$marker_user_state" "system-proxy.restored" "SESSION=${requested_session:-none}
+RESULT=NO_OWNED_PROXY" "$marker_uid" "$marker_gid" || true
+    fi
+    return 0
+  fi
+
+  session=$(owner_get SESSION '')
+  phase=$(owner_get PHASE '')
+  service=$(owner_get SERVICE '')
+  port=$(owner_get PORT '')
+  user_state=$(owner_get USER_STATE "$marker_user_state")
+  uid=$(owner_get UID "$marker_uid")
+  gid=$(owner_get GID "$marker_gid")
+  snapshot=$(owner_get SNAPSHOT '')
+
+  if [ -n "$requested_session" ] && [ "$session" != "$requested_session" ]; then
+    log_line "recover_refused requested=$requested_session owned=$session reason=SESSION_MISMATCH"
+    return 2
+  fi
+
+  case "$phase" in
+    SNAPSHOTTED)
+      rm -f "$CURRENT_FILE"
+      [ -d "$snapshot" ] && rm -rf "$snapshot"
+      safe_user_marker "$user_state" "system-proxy.restored" "SESSION=$session
+RESULT=SNAPSHOT_ONLY_CLEARED" "$uid" "$gid" || true
+      return 0
+      ;;
+    APPLIED)
+      if proxy_matches_owned "$service" "$port"; then
+        if restore_snapshot "$service" "$snapshot"; then
+          clear_owner_after_restore "$snapshot"
+          safe_user_marker "$user_state" "system-proxy.restored" "SESSION=$session
 SERVICE=$service
-RESULT=RESTORED" "$uid" "$gid" || true; rm -f "$user_state/run/system-proxy.ready" 2>/dev/null || true; log_line "session=$session restore=success service=$service"; return 0; fi; safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=RESTORE_COMMAND_FAILED" "$uid" "$gid" || true; return 1; fi; write_owner "$session" CONFLICT "$service" "$port" "$user_state" "$uid" "$gid" "$snapshot" "$(owner_get GUARDIAN_PID '')"; safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=PROXY_OWNERSHIP_LOST" "$uid" "$gid" || true; return 3 ;; CONFLICT) safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=PROXY_OWNERSHIP_CONFLICT_REQUIRES_MANUAL_REVIEW" "$uid" "$gid" || true; return 3 ;; *) return 4 ;; esac; }
+RESULT=RESTORED" "$uid" "$gid" || true
+          rm -f "$user_state/run/system-proxy.ready" 2>/dev/null || true
+          log_line "session=$session restore=success service=$service"
+          return 0
+        fi
+        safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=RESTORE_COMMAND_FAILED" "$uid" "$gid" || true
+        log_line "session=$session restore=failed reason=RESTORE_COMMAND_FAILED"
+        return 1
+      fi
+      write_owner "$session" CONFLICT "$service" "$port" "$user_state" "$uid" "$gid" "$snapshot" "$(owner_get GUARDIAN_PID '')"
+      safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=PROXY_OWNERSHIP_LOST" "$uid" "$gid" || true
+      log_line "session=$session restore=refused reason=PROXY_OWNERSHIP_LOST"
+      return 3
+      ;;
+    CONFLICT)
+      safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=PROXY_OWNERSHIP_CONFLICT_REQUIRES_MANUAL_REVIEW" "$uid" "$gid" || true
+      return 3
+      ;;
+    *)
+      log_line "recover_refused session=$session unknown_phase=$phase"
+      return 4
+      ;;
+  esac
+}
 
 guardian_monitor() { session="$1"; tor_pid="$2"; service="$3"; port="$4"; user_state="$5"; uid="$6"; gid="$7"; stop_file="$user_state/run/system-proxy.stop"; original_service="$service"; while :; do if [ -f "$stop_file" ]; then requested=$(sed -n 's/^SESSION=//p' "$stop_file" | tail -n 1); if [ -z "$requested" ] || [ "$requested" = "$session" ]; then recover_owned_proxy "$session" "$user_state" "$uid" "$gid"; return $?; fi; fi; if ! kill -0 "$tor_pid" 2>/dev/null; then safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
 REASON=TOR_PROCESS_DIED" "$uid" "$gid" || true; recover_owned_proxy "$session" "$user_state" "$uid" "$gid"; return $?; fi; if ! proxy_matches_owned "$service" "$port"; then write_owner "$session" CONFLICT "$service" "$port" "$user_state" "$uid" "$gid" "$(owner_get SNAPSHOT '')" "$$"; safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
 REASON=PROXY_OWNERSHIP_LOST" "$uid" "$gid" || true; return 3; fi; active=$(discover_service '' 2>/dev/null || true); if [ -n "$active" ] && [ "$active" != "$original_service" ]; then safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
 REASON=NETWORK_SERVICE_CHANGED" "$uid" "$gid" || true; recover_owned_proxy "$session" "$user_state" "$uid" "$gid"; return $?; fi; "$SLEEP_BIN" 1; done; }
 
-cmd_apply() { require_root; user_state=""; session=""; tor_pid=""; port=""; uid=""; gid=""; service_override=""; while [ "$#" -gt 0 ]; do case "$1" in --user-state) user_state="$2"; shift 2 ;; --session) session="$2"; shift 2 ;; --tor-pid) tor_pid="$2"; shift 2 ;; --port) port="$2"; shift 2 ;; --uid) uid="$2"; shift 2 ;; --gid) gid="$2"; shift 2 ;; --service) service_override="$2"; shift 2 ;; *) die "unknown apply argument: $1" ;; esac; done; [ -n "$user_state" ] && [ -n "$session" ] && [ -n "$tor_pid" ] && [ -n "$port" ] || die "apply requires user-state/session/tor-pid/port"; validate_user_state "$user_state" "$uid" "$gid" || die "user state path/ownership validation failed"; case "$session" in *$'\n'*|*$'\r'*) die "invalid session" ;; esac; case "$service_override" in *$'\n'*|*$'\r'*) die "invalid service name" ;; esac; case "$tor_pid" in *[!0-9]*|'') die "invalid tor pid" ;; esac; case "$port" in *[!0-9]*|'') die "invalid SOCKS port" ;; esac; ensure_system_dir; if [ -f "$CURRENT_FILE" ]; then if ! recover_owned_proxy '' "$user_state" "$uid" "$gid"; then safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=STALE_PROXY_RECOVERY_BLOCKED" "$uid" "$gid" || true; exit 1; fi; fi; service=$(discover_service "$service_override") || { safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=ACTIVE_NETWORK_SERVICE_NOT_FOUND" "$uid" "$gid" || true; exit 1; }; snapshot="$SYSTEM_STATE_DIR/snapshot-$session"; rm -rf "$snapshot"; capture_snapshot "$service" "$snapshot" || { safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=PROXY_SNAPSHOT_FAILED" "$uid" "$gid" || true; rm -rf "$snapshot"; exit 1; }; conflict=$(snapshot_conflict_reason "$snapshot"); if [ -n "$conflict" ]; then safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=$conflict" "$uid" "$gid" || true; rm -rf "$snapshot"; exit 1; fi; write_owner "$session" SNAPSHOTTED "$service" "$port" "$user_state" "$uid" "$gid" "$snapshot" "$$"; if ! apply_owned_proxy "$service" "$port"; then if proxy_matches_owned "$service" "$port"; then restore_snapshot "$service" "$snapshot" || true; fi; rm -f "$CURRENT_FILE"; rm -rf "$snapshot"; safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=PROXY_APPLY_OR_VERIFY_FAILED" "$uid" "$gid" || true; exit 1; fi; write_owner "$session" APPLIED "$service" "$port" "$user_state" "$uid" "$gid" "$snapshot" "$$"; safe_user_marker "$user_state" "system-proxy.ready" "SESSION=$session
+cmd_apply() {
+  require_root
+  user_state=""
+  session=""
+  tor_pid=""
+  port=""
+  uid=""
+  gid=""
+  service_override=""
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --user-state) user_state="$2"; shift 2 ;;
+      --session) session="$2"; shift 2 ;;
+      --tor-pid) tor_pid="$2"; shift 2 ;;
+      --port) port="$2"; shift 2 ;;
+      --uid) uid="$2"; shift 2 ;;
+      --gid) gid="$2"; shift 2 ;;
+      --service) service_override="$2"; shift 2 ;;
+      *) die "unknown apply argument: $1" ;;
+    esac
+  done
+
+  if [ -z "$user_state" ] || [ -z "$session" ] || [ -z "$tor_pid" ] || [ -z "$port" ]; then
+    die "apply requires user-state/session/tor-pid/port"
+  fi
+
+  validate_user_state "$user_state" "$uid" "$gid" ||
+    die "user state path/ownership validation failed"
+
+  case "$session" in *$'\n'*|*$'\r'*) die "invalid session" ;; esac
+  case "$service_override" in *$'\n'*|*$'\r'*) die "invalid service name" ;; esac
+  case "$tor_pid" in *[!0-9]*|'') die "invalid tor pid" ;; esac
+  case "$port" in *[!0-9]*|'') die "invalid SOCKS port" ;; esac
+
+  ensure_system_dir
+  if [ -f "$CURRENT_FILE" ]; then
+    if ! recover_owned_proxy '' "$user_state" "$uid" "$gid"; then
+      safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=STALE_PROXY_RECOVERY_BLOCKED" "$uid" "$gid" || true
+      exit 1
+    fi
+  fi
+
+  service=$(discover_service "$service_override") || {
+    safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=ACTIVE_NETWORK_SERVICE_NOT_FOUND" "$uid" "$gid" || true
+    exit 1
+  }
+
+  snapshot="$SYSTEM_STATE_DIR/snapshot-$session"
+  rm -rf "$snapshot"
+  capture_snapshot "$service" "$snapshot" || {
+    safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=PROXY_SNAPSHOT_FAILED" "$uid" "$gid" || true
+    rm -rf "$snapshot"
+    exit 1
+  }
+
+  conflict=$(snapshot_conflict_reason "$snapshot")
+  if [ -n "$conflict" ]; then
+    safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=$conflict" "$uid" "$gid" || true
+    log_line "session=$session apply=refused service=$service reason=$conflict"
+    rm -rf "$snapshot"
+    exit 1
+  fi
+
+  write_owner "$session" SNAPSHOTTED "$service" "$port" "$user_state" "$uid" "$gid" "$snapshot" "$$"
+  if ! apply_owned_proxy "$service" "$port"; then
+    if proxy_matches_owned "$service" "$port"; then
+      restore_snapshot "$service" "$snapshot" || true
+    fi
+    rm -f "$CURRENT_FILE"
+    rm -rf "$snapshot"
+    safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=PROXY_APPLY_OR_VERIFY_FAILED" "$uid" "$gid" || true
+    log_line "session=$session apply=failed service=$service"
+    exit 1
+  fi
+
+  write_owner "$session" APPLIED "$service" "$port" "$user_state" "$uid" "$gid" "$snapshot" "$$"
+  safe_user_marker "$user_state" "system-proxy.ready" "SESSION=$session
 SERVICE=$service
 PORT=$port
-RESULT=ACTIVE" "$uid" "$gid" || { recover_owned_proxy "$session" "$user_state" "$uid" "$gid" || true; exit 1; }; guardian_monitor "$session" "$tor_pid" "$service" "$port" "$user_state" "$uid" "$gid"; }
+RESULT=ACTIVE" "$uid" "$gid" || {
+    recover_owned_proxy "$session" "$user_state" "$uid" "$gid" || true
+    exit 1
+  }
+
+  log_line "session=$session apply=success service=$service port=$port"
+  guardian_monitor "$session" "$tor_pid" "$service" "$port" "$user_state" "$uid" "$gid"
+}
 
 cmd_recover() { require_root; user_state=""; session=""; uid=""; gid=""; while [ "$#" -gt 0 ]; do case "$1" in --user-state) user_state="$2"; shift 2 ;; --session) session="$2"; shift 2 ;; --uid) uid="$2"; shift 2 ;; --gid) gid="$2"; shift 2 ;; *) die "unknown recover argument: $1" ;; esac; done; if [ -n "$user_state" ]; then validate_user_state "$user_state" "$uid" "$gid" || die "user state path/ownership validation failed"; fi; recover_owned_proxy "$session" "$user_state" "$uid" "$gid"; }
 

@@ -9,7 +9,10 @@ TUNNEL_NAME="DevFix Tunnel"
 TUNNEL_TEST_MODE="${DEVFIX_TUNNEL_TEST_MODE:-0}"
 
 SELF_PATH="${BASH_SOURCE[0]}"
-SELF_DIR=$(cd -- "$(dirname -- "$SELF_PATH")" 2>/dev/null && pwd || pwd)
+SELF_DIR=$(cd -- "$(dirname -- "$SELF_PATH")" 2>/dev/null && pwd)
+if [ -z "$SELF_DIR" ]; then
+  SELF_DIR=$(pwd)
+fi
 
 if [ "$(uname -s 2>/dev/null || printf unknown)" = "Darwin" ]; then
   TUNNEL_STATE_ROOT="${DEVFIX_TUNNEL_STATE_DIR:-$HOME/Library/Application Support/DevFixTunnel}"
@@ -296,7 +299,7 @@ cmd_doctor() {
   if [ -x "$TUNNEL_TOR_BIN" ]; then printf 'Tor runtime: OK (%s)\n' "$TUNNEL_TOR_BIN"; else printf 'Tor runtime: MISSING (%s)\n' "$TUNNEL_TOR_BIN"; fail=1; fi
   if [ -x "$TUNNEL_LYREBIRD_BIN" ]; then printf 'lyrebird runtime: OK\n'; else printf 'lyrebird runtime: MISSING\n'; fail=1; fi
   if [ -x "$TUNNEL_GUARDIAN_BIN" ]; then printf 'System Proxy guardian: OK\n'; else printf 'System Proxy guardian: MISSING (%s)\n' "$TUNNEL_GUARDIAN_BIN"; fail=1; fi
-  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then [ -x /usr/sbin/networksetup ] && printf 'networksetup: OK\n' || { printf 'networksetup: MISSING\n'; fail=1; }; [ -x /sbin/route ] && printf 'route: OK\n' || { printf 'route: MISSING\n'; fail=1; }; if sudo_bin >/dev/null 2>&1; then printf 'sudo: OK\n'; else printf 'sudo: MISSING\n'; fail=1; fi; else printf 'System Proxy support: N/A outside macOS\n'; fi
+  if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then if [ -x /usr/sbin/networksetup ]; then printf 'networksetup: OK\n'; else printf 'networksetup: MISSING\n'; fail=1; fi; if [ -x /sbin/route ]; then printf 'route: OK\n'; else printf 'route: MISSING\n'; fail=1; fi; if sudo_bin >/dev/null 2>&1; then printf 'sudo: OK\n'; else printf 'sudo: MISSING\n'; fail=1; fi; else printf 'System Proxy support: N/A outside macOS\n'; fi
   printf 'Current state: %s\n' "$(state_get STATE DISCONNECTED)"; [ "$fail" -eq 0 ]
 }
 
