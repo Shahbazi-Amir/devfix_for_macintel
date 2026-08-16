@@ -96,8 +96,8 @@ if grep -Fq 'GeoIPExcludeUnknown 1' "$STATE/run/torrc"; then
 fi
 pass 'foreign-only policy is exit-scoped and bridge-safe'
 
-grep -Fq 'STALL_TIMEOUT_HANDSHAKE="${DEVFIX_TUNNEL_STALL_TIMEOUT_HANDSHAKE:-150}"' "$TUNNEL" || fail '150s handshake-stage stall limit missing'
-grep -Fq 'STALL_TIMEOUT_CONSENSUS="${DEVFIX_TUNNEL_STALL_TIMEOUT_CONSENSUS:-240}"' "$TUNNEL" || fail '240s consensus-stage stall limit missing'
+grep -Fq "STALL_TIMEOUT_HANDSHAKE=\"\${DEVFIX_TUNNEL_STALL_TIMEOUT_HANDSHAKE:-150}\"" "$TUNNEL" || fail '150s handshake-stage stall limit missing'
+grep -Fq "STALL_TIMEOUT_CONSENSUS=\"\${DEVFIX_TUNNEL_STALL_TIMEOUT_CONSENSUS:-240}\"" "$TUNNEL" || fail '240s consensus-stage stall limit missing'
 grep -Fq 'stall_timeout_for_percent' "$TUNNEL" || fail 'phase-aware stall function missing'
 pass 'phase-aware bootstrap stall policy is present'
 
