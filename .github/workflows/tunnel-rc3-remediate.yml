@@ -1,0 +1,40 @@
+name: DevFix Tunnel RC3 Remediation
+
+on:
+  push:
+    branches: [feature/devfix-tunnel]
+    paths: [".github/workflows/tunnel-rc3-remediate.yml"]
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/devfix-tunnel
+          fetch-depth: 0
+      - name: Apply RC3 remediation
+        run: python3 scripts/tunnel_rc3_remediate.py
+      - name: Syntax and ShellCheck
+        run: |
+          sudo apt-get update >/dev/null
+          sudo apt-get install -y shellcheck >/dev/null
+          bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh tests/test_devfix_tunnel_tor_config.sh tests/test_devfix_tunnel_rc2.sh tests/test_devfix_tunnel_rc3.sh
+          shellcheck -x tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh tests/test_devfix_tunnel_chrome.sh tests/test_devfix_tunnel_tor_config.sh tests/test_devfix_tunnel_rc2.sh tests/test_devfix_tunnel_rc3.sh
+      - name: Regression tests
+        run: |
+          bash tests/test_devfix_tunnel.sh
+          bash tests/test_devfix_tunnel_chrome.sh
+          bash tests/test_devfix_tunnel_rc2.sh
+          bash tests/test_devfix_tunnel_rc3.sh
+      - name: Commit RC3 remediation
+        run: |
+          git config user.name "Amir Shahbazi"
+          git config user.email "36712410+Shahbazi-Amir@users.noreply.github.com"
+          git add tunnel tests docs/tunnel/remediations
+          git diff --cached --check
+          git commit -m "fix(tunnel): preserve directory progress in rc3"
+          git push origin HEAD:feature/devfix-tunnel
