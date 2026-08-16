@@ -1,5 +1,23 @@
 #!/bin/bash
 set -e
+
 OLD_GUARDIAN="/usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian"
-if [ -x "$OLD_GUARDIAN" ]; then "$OLD_GUARDIAN" recover || true; fi
+TUNNEL_TOR_PATTERN='/usr/local/libexec/devfix-tunnel/tor/tor.*DevFixTunnel/run/torrc'
+
+# Never replace a runtime that is currently serving an active/bootstrapping
+# DevFix Tunnel session. The user can disconnect normally and retry install.
+if /usr/bin/pgrep -f "$TUNNEL_TOR_PATTERN" >/dev/null 2>&1; then
+  echo "DevFix Tunnel is currently running. Disconnect it before upgrading." >&2
+  exit 1
+fi
+
+# If a stale tunnel-owned System Proxy record exists, it must be recovered
+# successfully before package files are replaced.
+if [ -x "$OLD_GUARDIAN" ]; then
+  if ! "$OLD_GUARDIAN" recover; then
+    echo "Refusing upgrade because previous tunnel-owned proxy state could not be safely recovered." >&2
+    exit 1
+  fi
+fi
+
 exit 0
