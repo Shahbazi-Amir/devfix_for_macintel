@@ -1,0 +1,35 @@
+name: Remediate Tunnel V5 Tests
+
+on:
+  push:
+    branches: [feature/devfix-tunnel]
+    paths:
+      - ".github/bootstrap/remediate-tunnel-v5-tests.trigger"
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply V5 test patch
+        run: python3 scripts/remediate_tunnel_v5_tests.py
+      - name: Syntax and ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh
+          shellcheck -x tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh
+      - name: Run full Tunnel tests
+        run: bash tests/test_devfix_tunnel.sh
+      - name: Commit test update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/test_devfix_tunnel.sh
+          git commit -m "test(tunnel): cover v5 transport fallback and exit policy"
+          git push origin HEAD:feature/devfix-tunnel
