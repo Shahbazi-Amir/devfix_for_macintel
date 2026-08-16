@@ -1,16 +1,31 @@
 #!/bin/bash
 set -e
+
 SYSTEM_DIR="/Library/Application Support/DevFixTunnel"
 PLIST="/Library/LaunchDaemons/com.devfix.tunnel.recovery.plist"
+GUARDIAN="/usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian"
+
 mkdir -p "$SYSTEM_DIR"
 chmod 700 "$SYSTEM_DIR"
 chown root:wheel "$SYSTEM_DIR" 2>/dev/null || true
 chmod 755 /usr/local/bin/devfix-tunnel
-chmod 755 /usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian
+chmod 755 /usr/local/bin/devfix-tunnel-chrome
+chmod 755 "$GUARDIAN"
 chmod -R a+rX /usr/local/libexec/devfix-tunnel/tor
 chmod 644 "$PLIST"
 chown root:wheel "$PLIST" 2>/dev/null || true
-/usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian recover || true
+
+if ! "$GUARDIAN" recover; then
+  echo "DevFix Tunnel postinstall could not safely recover tunnel-owned proxy state." >&2
+  exit 1
+fi
+
 /bin/launchctl bootout system "$PLIST" >/dev/null 2>&1 || true
-if ! /bin/launchctl bootstrap system "$PLIST" >/dev/null 2>&1; then /bin/launchctl load -w "$PLIST" >/dev/null 2>&1 || true; fi
+if ! /bin/launchctl bootstrap system "$PLIST" >/dev/null 2>&1; then
+  if ! /bin/launchctl load -w "$PLIST" >/dev/null 2>&1; then
+    echo "DevFix Tunnel recovery LaunchDaemon could not be activated." >&2
+    exit 1
+  fi
+fi
+
 exit 0
