@@ -1,0 +1,143 @@
+name: Remediate Tunnel SC2015
+
+on:
+  push:
+    branches: [feature/devfix-tunnel]
+    paths:
+      - ".github/bootstrap/remediate-tunnel-sc2015.trigger"
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply deterministic SC2015 remediation
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(path, old, new, label):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly 1 match in {path}, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          cli = "tunnel/cli/devfix-tunnel"
+          replace_once(
+              cli,
+              'SELF_DIR=$(cd -- "$(dirname -- "$SELF_PATH")" 2>/dev/null && pwd || pwd)',
+              'SELF_DIR=$(cd -- "$(dirname -- "$SELF_PATH")" 2>/dev/null && pwd)\nif [ -z "$SELF_DIR" ]; then\n  SELF_DIR=$(pwd)\nfi',
+              "cli SELF_DIR"
+          )
+          replace_once(
+              cli,
+              "[ -x /usr/sbin/networksetup ] && printf 'networksetup: OK\\n' || { printf 'networksetup: MISSING\\n'; fail=1; };",
+              "if [ -x /usr/sbin/networksetup ]; then printf 'networksetup: OK\\n'; else printf 'networksetup: MISSING\\n'; fail=1; fi;",
+              "cli doctor networksetup"
+          )
+          replace_once(
+              cli,
+              "[ -x /sbin/route ] && printf 'route: OK\\n' || { printf 'route: MISSING\\n'; fail=1; };",
+              "if [ -x /sbin/route ]; then printf 'route: OK\\n'; else printf 'route: MISSING\\n'; fail=1; fi;",
+              "cli doctor route"
+          )
+
+          guardian = "tunnel/libexec/devfix-tunnel-guardian"
+          p = Path(guardian)
+          text = p.read_text()
+          pattern = re.compile(
+              r'''\[ -f "\$CURRENT_FILE" \] \|\| \{ \[ -n "\$marker_user_state" \] && safe_user_marker "\$marker_user_state" "system-proxy\.restored" "SESSION=\$\{requested_session:-none\}\nRESULT=NO_OWNED_PROXY" "\$marker_uid" "\$marker_gid" \|\| true; return 0; \};'''
+          )
+          replacement = '''if [ ! -f "$CURRENT_FILE" ]; then
+    if [ -n "$marker_user_state" ]; then
+      safe_user_marker "$marker_user_state" "system-proxy.restored" "SESSION=${requested_session:-none}
+RESULT=NO_OWNED_PROXY" "$marker_uid" "$marker_gid" || true
+    fi
+    return 0
+  fi'''
+          text2, n = pattern.subn(replacement, text, count=1)
+          if n != 1:
+              raise SystemExit(f"guardian recover no-current: expected 1 match, found {n}")
+          p.write_text(text2)
+          replace_once(
+              guardian,
+              '[ -n "$user_state" ] && [ -n "$session" ] && [ -n "$tor_pid" ] && [ -n "$port" ] || die "apply requires user-state/session/tor-pid/port";',
+              'if [ -z "$user_state" ] || [ -z "$session" ] || [ -z "$tor_pid" ] || [ -z "$port" ]; then\n    die "apply requires user-state/session/tor-pid/port"\n  fi',
+              "guardian required apply args"
+          )
+
+          replace_once(
+              "tunnel/scripts/fetch-tor-bundle.sh",
+              '[ -n "$source_dir" ] && [ -d "$source_dir" ] || { echo "Tor bundle layout not recognized" >&2; exit 1; }',
+              'if [ -z "$source_dir" ] || [ ! -d "$source_dir" ]; then\n  echo "Tor bundle layout not recognized" >&2\n  exit 1\nfi',
+              "fetch bundle source directory"
+          )
+
+          uninstall = Path("tunnel/uninstall.sh")
+          text = uninstall.read_text()
+          text = text.replace(
+              '[ -d "$home/Library/Application Support/DevFixTunnel" ] && rm -rf "$home/Library/Application Support/DevFixTunnel" || true;',
+              'if [ -d "$home/Library/Application Support/DevFixTunnel" ]; then rm -rf "$home/Library/Application Support/DevFixTunnel"; fi;'
+          )
+          text = text.replace(
+              '[ -d "$home/Library/Logs/DevFixTunnel" ] && rm -rf "$home/Library/Logs/DevFixTunnel" || true;',
+              'if [ -d "$home/Library/Logs/DevFixTunnel" ]; then rm -rf "$home/Library/Logs/DevFixTunnel"; fi;'
+          )
+          uninstall.write_text(text)
+
+          Path("docs/tunnel/remediations").mkdir(parents=True, exist_ok=True)
+          Path("docs/tunnel/remediations/001_SHELLCHECK_SC2015.md").write_text("""# Remediation 001 — SHELLCHECK_SC2015
+
+## Failure
+
+CI run `31936598799` failed the Tunnel ShellCheck gate on `SC2015`: shell constructs of the form `A && B || C` were being used where explicit control flow is safer and clearer.
+
+## Root cause
+
+The implementation was functionally covered by integration fixtures, but several compact shell expressions were ambiguous to static analysis. In some cases the fallback branch could theoretically execute if the middle command failed even when the first condition succeeded.
+
+## Fix
+
+All flagged control-flow expressions were converted to explicit `if/then/else` or equivalent fail-closed conditionals. No test, security check, conflict rule, ownership rule, or restore behavior was weakened.
+
+## Required validation
+
+- `bash -n` on all Tunnel shell sources
+- ShellCheck with no suppressed `SC2015`
+- complete `tests/test_devfix_tunnel.sh`
+- Intel macOS command-contract job
+- inherited DevFix regressions
+- package workflow independently
+
+Status becomes closed only after the post-fix CI run passes.
+""")
+          PY
+
+      - name: Syntax and ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          bash -n tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh
+          shellcheck -x tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/*.sh tunnel/pkg/preinstall tunnel/pkg/postinstall tunnel/portable-install.sh tunnel/uninstall.sh tests/test_devfix_tunnel.sh
+
+      - name: Run unchanged Tunnel integration tests
+        run: bash tests/test_devfix_tunnel.sh
+
+      - name: Commit remediation and remove one-shot workflow
+        run: |
+          rm -f .github/bootstrap/remediate-tunnel-sc2015.trigger
+          rm -f .github/workflows/remediate-tunnel-sc2015.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tunnel/cli/devfix-tunnel tunnel/libexec/devfix-tunnel-guardian tunnel/scripts/fetch-tor-bundle.sh tunnel/uninstall.sh docs/tunnel/remediations .github/bootstrap .github/workflows
+          git commit -m "fix(tunnel): make shell control flow explicit"
+          git push origin HEAD:feature/devfix-tunnel
