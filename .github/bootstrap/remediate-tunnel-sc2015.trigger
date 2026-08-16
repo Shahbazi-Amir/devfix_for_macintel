@@ -1,3 +1,4 @@
-run=2
+run=3
 failure_class=SHELLCHECK_SC2015
 workflow_fix=WORKFLOW_YAML_PARSE
+patch_fix=REMEDIATION_PATCH_SYNTAX
