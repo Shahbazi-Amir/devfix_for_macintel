@@ -24,7 +24,7 @@ case "\${1:-}" in
   status)
     if [ -f "\$STATE" ]; then
       printf '%s\n' \
-        'DevFix Tunnel 0.3.0-rc1' \
+        'DevFix Tunnel 0.3.0-rc2' \
         'State: CONNECTED' \
         'Mode: SOCKS' \
         'SOCKS: socks5h://127.0.0.1:29150' \
@@ -39,7 +39,7 @@ case "\${1:-}" in
         printf '%s\n' 'Health: DEGRADED'
       fi
     else
-      printf '%s\n' 'DevFix Tunnel 0.3.0-rc1' 'State: DISCONNECTED' 'Mode: NONE'
+      printf '%s\n' 'DevFix Tunnel 0.3.0-rc2' 'State: DISCONNECTED' 'Mode: NONE'
     fi
     ;;
   connect)

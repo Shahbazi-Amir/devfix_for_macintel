@@ -4,7 +4,7 @@
 
 set -u
 
-TUNNEL_VERSION="0.3.0-rc1"
+TUNNEL_VERSION="0.3.0-rc2"
 TUNNEL_NAME="DevFix Tunnel"
 TUNNEL_TEST_MODE="${DEVFIX_TUNNEL_TEST_MODE:-0}"
 
@@ -47,12 +47,17 @@ TUNNEL_LOG="$TUNNEL_LOG_DIR/devfix-tunnel.log"
 
 DEFAULT_SOCKS_PORT="${DEVFIX_TUNNEL_SOCKS_PORT:-19150}"
 BOOTSTRAP_TIMEOUT="${DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT:-420}"
+STALL_TIMEOUT_OVERRIDE="${DEVFIX_TUNNEL_STALL_TIMEOUT:-}"
 STALL_TIMEOUT="${DEVFIX_TUNNEL_STALL_TIMEOUT:-90}"
+STALL_TIMEOUT_HANDSHAKE="${DEVFIX_TUNNEL_STALL_TIMEOUT_HANDSHAKE:-150}"
+STALL_TIMEOUT_CONSENSUS="${DEVFIX_TUNNEL_STALL_TIMEOUT_CONSENSUS:-240}"
 VALIDATION_TIMEOUT="${DEVFIX_TUNNEL_VALIDATION_TIMEOUT:-30}"
 GUARDIAN_START_TIMEOUT="${DEVFIX_TUNNEL_GUARDIAN_START_TIMEOUT:-30}"
 GUARDIAN_STOP_TIMEOUT="${DEVFIX_TUNNEL_GUARDIAN_STOP_TIMEOUT:-20}"
-MAX_AUTO_ATTEMPTS="${DEVFIX_TUNNEL_MAX_AUTO_ATTEMPTS:-5}"
+MAX_AUTO_ATTEMPTS="${DEVFIX_TUNNEL_MAX_AUTO_ATTEMPTS:-0}"
 TOR_CHECK_URL="${DEVFIX_TUNNEL_TOR_CHECK_URL:-https://check.torproject.org/api/ip}"
+
+case "$MAX_AUTO_ATTEMPTS" in ''|*[!0-9]*) MAX_AUTO_ATTEMPTS=0 ;; esac
 
 info() { printf '%s\n' "$*"; }
 warn() { printf 'Warning: %s\n' "$*" >&2; }
@@ -213,7 +218,7 @@ EOF
 
   if [ "$exit_policy" = "FOREIGN_ONLY" ]; then
     cat >> "$TUNNEL_TORRC" <<EOF
-GeoIPExcludeUnknown 1
+GeoIPExcludeUnknown 0
 ExcludeExitNodes {ir},{??}
 EOF
   fi
@@ -250,9 +255,24 @@ bootstrap_percent_from_log() {
   case "$value" in ''|*[!0-9]*) printf '0' ;; *) printf '%s' "$value" ;; esac
 }
 
+stall_timeout_for_percent() {
+  percent="$1"
+  if [ -n "$STALL_TIMEOUT_OVERRIDE" ]; then
+    printf '%s' "$STALL_TIMEOUT"
+  elif [ "$percent" -ge 25 ] 2>/dev/null; then
+    printf '%s' "$STALL_TIMEOUT_CONSENSUS"
+  elif [ "$percent" -ge 10 ] 2>/dev/null; then
+    printf '%s' "$STALL_TIMEOUT_HANDSHAKE"
+  else
+    printf '%s' "$STALL_TIMEOUT"
+  fi
+}
+
 classify_attempt_failure() {
   transport="$1"; file="$2"; fallback="$3"
-  if [ "$transport" = "snowflake" ] && grep -q 'timeout waiting for DataChannel.OnOpen' "$file" 2>/dev/null; then
+  if grep -q 'Not using bridge at .*it is in ExcludeNodes' "$file" 2>/dev/null; then
+    printf 'BRIDGE_EXCLUDED_BY_NODE_POLICY'
+  elif [ "$transport" = "snowflake" ] && grep -q 'timeout waiting for DataChannel.OnOpen' "$file" 2>/dev/null; then
     printf 'SNOWFLAKE_WEBRTC_DATACHANNEL_FAILURE'
   elif [ "$transport" = "snowflake" ] && grep -q 'broker failure' "$file" 2>/dev/null; then
     printf 'BROKER_RENDEZVOUS_FAILURE'
@@ -310,11 +330,12 @@ run_transport_attempt() {
       last_progress_epoch=$(now_epoch)
     fi
     if [ "$percent" -ge 100 ] 2>/dev/null; then break; fi
-    if [ $(( $(now_epoch) - last_progress_epoch )) -ge "$STALL_TIMEOUT" ]; then
+    stall_limit=$(stall_timeout_for_percent "$percent")
+    if [ $(( $(now_epoch) - last_progress_epoch )) -ge "$stall_limit" ]; then
       classification=$(classify_attempt_failure "$transport" "$attempt_log" BOOTSTRAP_STALL)
       stop_owned_tor "$pid" || true
       write_state FAILED SOCKS "$pid" "$port" "$session" "$started" '' "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
-      warn "$classification: $transport candidate $candidate stalled at ${percent}% for ${STALL_TIMEOUT}s."
+      warn "$classification: $transport candidate $candidate stalled at ${percent}% for ${stall_limit}s."
       safe_remove_data_dir "$data_dir" 2>/dev/null || true
       return 1
     fi
@@ -388,7 +409,7 @@ start_transport() {
     [ -n "$transport" ] || continue
     found=1
     attempt_no=$((attempt_no + 1))
-    if [ "$requested_transport" = "auto" ] && [ "$attempt_no" -gt "$MAX_AUTO_ATTEMPTS" ]; then break; fi
+    if [ "$requested_transport" = "auto" ] && [ "$MAX_AUTO_ATTEMPTS" -gt 0 ] && [ "$attempt_no" -gt "$MAX_AUTO_ATTEMPTS" ]; then break; fi
     if run_transport_attempt "$requested_mode" "$requested_transport" "$transport" "$candidate" "$bridge" "$port" "$session" "$started" "$exit_policy" "$exit_country" "$attempt_no"; then
       return 0
     fi

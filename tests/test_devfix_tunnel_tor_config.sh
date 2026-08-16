@@ -65,7 +65,7 @@ ClientTransportPlugin $plugin exec $LYREBIRD
 Bridge $bridge
 GeoIPFile "$GEOIP"
 GeoIPv6File "$GEOIP6"
-GeoIPExcludeUnknown 1
+GeoIPExcludeUnknown 0
 ExcludeExitNodes {ir},{??}
 ExitNodes {de}
 Log notice stdout

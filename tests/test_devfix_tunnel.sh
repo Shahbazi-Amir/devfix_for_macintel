@@ -12,7 +12,7 @@ pass() { printf 'PASS: %s\n' "$*"; }
 
 bash -n "$TUNNEL" || fail "tunnel syntax"
 bash -n "$GUARDIAN" || fail "guardian syntax"
-"$TUNNEL" version | grep -q '0.3.0-rc1' || fail "version"
+"$TUNNEL" version | grep -q '0.3.0-rc2' || fail "version"
 "$TUNNEL" help | grep -q 'System Proxy' || fail "help"
 pass "syntax and basic CLI"
 

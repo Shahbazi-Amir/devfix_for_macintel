@@ -2,7 +2,7 @@
 
 DevFix Tunnel is the independent macOS censorship-circumvention product built from the proven DevFix Tor/bridge foundation while keeping stable DevFix separate.
 
-Current release candidate: `0.3.0-rc1`.
+Current release candidate: `0.3.0-rc2`.
 
 Primary target: Intel x86_64 Mac / macOS Monterey 12.x.
 
@@ -11,6 +11,8 @@ Primary target: Intel x86_64 Mac / macOS Monterey 12.x.
 Physical Monterey testing of `0.2.0-rc1` proved installation, runtime integrity, repair safety, and fail-closed proxy behavior, but two real Snowflake sessions stalled at 10% with repeated WebRTC `DataChannel.OnOpen` failures. The old candidate depended on one hard-coded Snowflake bridge definition even though the same official Tor Expert Bundle already shipped current Snowflake, meek_lite, and obfs4 bridge definitions.
 
 V5 removes that single-route dependency. The exact packaged Tor bundle is now the source of truth for the transport catalog.
+
+Physical testing of `0.3.0-rc1` exposed a second resilience class: `GeoIPExcludeUnknown 1` could classify unknown-country entry bridges as excluded, the auto engine stopped after five candidates even when more obfs4 bridges existed, and a fixed 90-second no-progress cutoff was too aggressive for consensus loading. `0.3.0-rc2` separates exit-only country policy from entry-bridge eligibility, exhausts the packaged catalog by default, and uses phase-aware stall limits.
 
 ## Current architecture
 
@@ -170,7 +172,7 @@ Repeated same-mode `connect` is idempotent. Switching between SOCKS and System P
 
 ## What this product is not
 
-`0.3.0-rc1` is not represented as a packet-level full-device VPN.
+`0.3.0-rc2` is not represented as a packet-level full-device VPN.
 
 System Proxy can cover a large class of macOS applications, selective Chrome gives an explicit split-browser workflow, and `devfix-tunnel run` covers explicit CLI child processes, but software that bypasses System Proxy and does not honor SOCKS/proxy configuration is not automatically captured.
 
