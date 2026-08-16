@@ -1,8 +1,13 @@
 #!/bin/bash
 set -euo pipefail
+
 ROOT=$(cd -- "$(dirname -- "$0")" && pwd)
 [ "$(uname -s)" = "Darwin" ] || { echo "DevFix Tunnel supports macOS only." >&2; exit 1; }
 [ "$(uname -m)" = "x86_64" ] || { echo "This package targets Intel x86_64 Macs." >&2; exit 1; }
+[ -f "$ROOT/share/transports.tsv" ] || { echo "Transport catalog missing from portable package." >&2; exit 1; }
+[ -f "$ROOT/libexec/tor/geoip" ] || { echo "Tor geoip data missing from portable package." >&2; exit 1; }
+[ -f "$ROOT/libexec/tor/geoip6" ] || { echo "Tor geoip6 data missing from portable package." >&2; exit 1; }
+
 sudo -v
 sudo mkdir -p /usr/local/bin /usr/local/libexec/devfix-tunnel/tor /usr/local/share/devfix-tunnel "/Library/Application Support/DevFixTunnel"
 sudo install -m 755 "$ROOT/bin/devfix-tunnel" /usr/local/bin/devfix-tunnel
@@ -11,6 +16,7 @@ sudo rm -rf /usr/local/libexec/devfix-tunnel/tor
 sudo mkdir -p /usr/local/libexec/devfix-tunnel/tor
 sudo cp -R "$ROOT/libexec/tor/." /usr/local/libexec/devfix-tunnel/tor/
 sudo chmod -R a+rX /usr/local/libexec/devfix-tunnel/tor
+sudo install -m 644 "$ROOT/share/transports.tsv" /usr/local/share/devfix-tunnel/transports.tsv
 sudo install -m 644 "$ROOT/launchd/com.devfix.tunnel.recovery.plist" /Library/LaunchDaemons/com.devfix.tunnel.recovery.plist
 sudo install -m 644 "$ROOT/README.md" /usr/local/share/devfix-tunnel/README.md
 sudo chown root:wheel /Library/LaunchDaemons/com.devfix.tunnel.recovery.plist 2>/dev/null || true
