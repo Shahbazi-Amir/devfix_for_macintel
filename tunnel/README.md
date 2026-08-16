@@ -2,7 +2,7 @@
 
 DevFix Tunnel is the independent macOS censorship-circumvention product built from the proven DevFix Tor/bridge foundation while keeping stable DevFix separate.
 
-Current release candidate: `0.3.0-rc2`.
+Current release candidate: `0.3.0-rc3`.
 
 Primary target: Intel x86_64 Mac / macOS Monterey 12.x.
 
@@ -12,7 +12,9 @@ Physical Monterey testing of `0.2.0-rc1` proved installation, runtime integrity,
 
 V5 removes that single-route dependency. The exact packaged Tor bundle is now the source of truth for the transport catalog.
 
-Physical testing of `0.3.0-rc1` exposed a second resilience class: `GeoIPExcludeUnknown 1` could classify unknown-country entry bridges as excluded, the auto engine stopped after five candidates even when more obfs4 bridges existed, and a fixed 90-second no-progress cutoff was too aggressive for consensus loading. `0.3.0-rc2` separates exit-only country policy from entry-bridge eligibility, exhausts the packaged catalog by default, and uses phase-aware stall limits.
+Physical testing of `0.3.0-rc1` exposed a second resilience class: `GeoIPExcludeUnknown 1` could classify unknown-country entry bridges as excluded, the auto engine stopped after five candidates even when more obfs4 bridges existed, and a fixed 90-second no-progress cutoff was too aggressive for consensus loading. `0.3.0-rc3` separates exit-only country policy from entry-bridge eligibility, exhausts the packaged catalog by default, and uses phase-aware stall limits.
+
+Physical RC2 then proved that later obfs4 bridges could reach 50% and obtain a usable consensus, but each fallback used a fresh DataDirectory and Tor's default CacheDirectory followed it, so consensus/certificate/microdescriptor work was discarded. RC3 keeps fresh per-attempt DataDirectory/guard state while using a separate persistent directory cache shared sequentially across fallback attempts and sessions. It enables normal cache writes and gives the descriptor-loading phase a longer no-progress window.
 
 ## Current architecture
 
@@ -172,7 +174,7 @@ Repeated same-mode `connect` is idempotent. Switching between SOCKS and System P
 
 ## What this product is not
 
-`0.3.0-rc2` is not represented as a packet-level full-device VPN.
+`0.3.0-rc3` is not represented as a packet-level full-device VPN.
 
 System Proxy can cover a large class of macOS applications, selective Chrome gives an explicit split-browser workflow, and `devfix-tunnel run` covers explicit CLI child processes, but software that bypasses System Proxy and does not honor SOCKS/proxy configuration is not automatically captured.
 

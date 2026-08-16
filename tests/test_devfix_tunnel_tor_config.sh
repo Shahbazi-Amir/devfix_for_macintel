@@ -52,14 +52,16 @@ verify_transport() {
   [ -n "$bridge" ] || fail "no $transport bridge candidate"
   plugin=$(plugin_name "$transport") || fail "unsupported test transport $transport"
   data="$TMP/data-$transport"
+  cache="$TMP/cache"
   torrc="$TMP/torrc-$transport"
-  mkdir -p "$data"
+  mkdir -p "$data" "$cache"
 
   cat > "$torrc" <<EOF
 DataDirectory "$data"
+CacheDirectory "$cache"
 SocksPort 0
 ClientOnly 1
-AvoidDiskWrites 1
+AvoidDiskWrites 0
 UseBridges 1
 ClientTransportPlugin $plugin exec $LYREBIRD
 Bridge $bridge

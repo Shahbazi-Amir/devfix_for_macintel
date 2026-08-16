@@ -4,7 +4,7 @@
 
 set -u
 
-TUNNEL_VERSION="0.3.0-rc2"
+TUNNEL_VERSION="0.3.0-rc3"
 TUNNEL_NAME="DevFix Tunnel"
 TUNNEL_TEST_MODE="${DEVFIX_TUNNEL_TEST_MODE:-0}"
 
@@ -35,6 +35,7 @@ fi
 
 TUNNEL_RUN_DIR="$TUNNEL_STATE_ROOT/run"
 TUNNEL_TOR_DATA_BASE="$TUNNEL_STATE_ROOT/tor-data"
+TUNNEL_TOR_CACHE_DIR="${DEVFIX_TUNNEL_CACHE_DIR:-$TUNNEL_STATE_ROOT/tor-cache}"
 TUNNEL_STATE_FILE="$TUNNEL_RUN_DIR/state"
 TUNNEL_PID_FILE="$TUNNEL_RUN_DIR/tor.pid"
 TUNNEL_TORRC="$TUNNEL_RUN_DIR/torrc"
@@ -46,11 +47,12 @@ TUNNEL_GUARDIAN_LOG="$TUNNEL_LOG_DIR/guardian-launch.log"
 TUNNEL_LOG="$TUNNEL_LOG_DIR/devfix-tunnel.log"
 
 DEFAULT_SOCKS_PORT="${DEVFIX_TUNNEL_SOCKS_PORT:-19150}"
-BOOTSTRAP_TIMEOUT="${DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT:-420}"
+BOOTSTRAP_TIMEOUT="${DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT:-1200}"
 STALL_TIMEOUT_OVERRIDE="${DEVFIX_TUNNEL_STALL_TIMEOUT:-}"
 STALL_TIMEOUT="${DEVFIX_TUNNEL_STALL_TIMEOUT:-90}"
-STALL_TIMEOUT_HANDSHAKE="${DEVFIX_TUNNEL_STALL_TIMEOUT_HANDSHAKE:-150}"
-STALL_TIMEOUT_CONSENSUS="${DEVFIX_TUNNEL_STALL_TIMEOUT_CONSENSUS:-240}"
+STALL_TIMEOUT_HANDSHAKE="${DEVFIX_TUNNEL_STALL_TIMEOUT_HANDSHAKE:-180}"
+STALL_TIMEOUT_CONSENSUS="${DEVFIX_TUNNEL_STALL_TIMEOUT_CONSENSUS:-360}"
+STALL_TIMEOUT_DESCRIPTORS="${DEVFIX_TUNNEL_STALL_TIMEOUT_DESCRIPTORS:-900}"
 VALIDATION_TIMEOUT="${DEVFIX_TUNNEL_VALIDATION_TIMEOUT:-30}"
 GUARDIAN_START_TIMEOUT="${DEVFIX_TUNNEL_GUARDIAN_START_TIMEOUT:-30}"
 GUARDIAN_STOP_TIMEOUT="${DEVFIX_TUNNEL_GUARDIAN_STOP_TIMEOUT:-20}"
@@ -68,9 +70,9 @@ now_epoch() { date '+%s'; }
 
 ensure_dirs() {
   umask 077
-  mkdir -p "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_BASE" "$TUNNEL_LOG_DIR" ||
+  mkdir -p "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_BASE" "$TUNNEL_TOR_CACHE_DIR" "$TUNNEL_LOG_DIR" ||
     die "cannot create DevFix Tunnel state directories"
-  chmod 700 "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_BASE" "$TUNNEL_LOG_DIR" 2>/dev/null || true
+  chmod 700 "$TUNNEL_STATE_ROOT" "$TUNNEL_RUN_DIR" "$TUNNEL_TOR_DATA_BASE" "$TUNNEL_TOR_CACHE_DIR" "$TUNNEL_LOG_DIR" 2>/dev/null || true
 }
 
 log_line() {
@@ -199,6 +201,7 @@ write_torrc() {
   port="$1"; data_dir="$2"; transport="$3"; bridge="$4"; exit_policy="$5"; exit_country="$6"
   ensure_dirs
   q_data=$(torrc_quote "$data_dir")
+  q_cache=$(torrc_quote "$TUNNEL_TOR_CACHE_DIR")
   q_geoip=$(torrc_quote "$TUNNEL_GEOIP")
   q_geoip6=$(torrc_quote "$TUNNEL_GEOIP6")
   plugin=$(transport_plugin_name "$transport") || die "unsupported transport: $transport"
@@ -206,9 +209,10 @@ write_torrc() {
 
   cat > "$TUNNEL_TORRC" <<EOF
 DataDirectory $q_data
+CacheDirectory $q_cache
 SocksPort 127.0.0.1:$port
 ClientOnly 1
-AvoidDiskWrites 1
+AvoidDiskWrites 0
 UseBridges 1
 ClientTransportPlugin $plugin exec $TUNNEL_LYREBIRD_BIN
 Bridge $bridge
@@ -259,6 +263,8 @@ stall_timeout_for_percent() {
   percent="$1"
   if [ -n "$STALL_TIMEOUT_OVERRIDE" ]; then
     printf '%s' "$STALL_TIMEOUT"
+  elif [ "$percent" -ge 40 ] 2>/dev/null; then
+    printf '%s' "$STALL_TIMEOUT_DESCRIPTORS"
   elif [ "$percent" -ge 25 ] 2>/dev/null; then
     printf '%s' "$STALL_TIMEOUT_CONSENSUS"
   elif [ "$percent" -ge 10 ] 2>/dev/null; then
@@ -276,6 +282,8 @@ classify_attempt_failure() {
     printf 'SNOWFLAKE_WEBRTC_DATACHANNEL_FAILURE'
   elif [ "$transport" = "snowflake" ] && grep -q 'broker failure' "$file" 2>/dev/null; then
     printf 'BROKER_RENDEZVOUS_FAILURE'
+  elif grep -Eq 'Bootstrapped (40|45|50|55|60|65|70|75)%' "$file" 2>/dev/null; then
+    printf 'DIRECTORY_INFO_STALL'
   else
     printf '%s' "$fallback"
   fi
@@ -644,6 +652,7 @@ cmd_doctor() {
   else printf 'Transport catalog: MISSING (%s)\n' "$TUNNEL_TRANSPORT_CATALOG"; fail=1; fi
   if [ -f "$TUNNEL_GEOIP" ]; then printf 'GeoIP IPv4: OK\n'; else printf 'GeoIP IPv4: MISSING\n'; fail=1; fi
   if [ -f "$TUNNEL_GEOIP6" ]; then printf 'GeoIP IPv6: OK\n'; else printf 'GeoIP IPv6: MISSING\n'; fail=1; fi
+  if [ -d "$TUNNEL_TOR_CACHE_DIR" ]; then printf 'Directory cache: OK (%s)\n' "$TUNNEL_TOR_CACHE_DIR"; else printf 'Directory cache: WILL CREATE (%s)\n' "$TUNNEL_TOR_CACHE_DIR"; fi
   if [ -x "$TUNNEL_GUARDIAN_BIN" ]; then printf 'System Proxy guardian: OK\n'; else printf 'System Proxy guardian: MISSING (%s)\n' "$TUNNEL_GUARDIAN_BIN"; fail=1; fi
   if [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then
     if [ -x /usr/sbin/networksetup ]; then printf 'networksetup: OK\n'; else printf 'networksetup: MISSING\n'; fail=1; fi
