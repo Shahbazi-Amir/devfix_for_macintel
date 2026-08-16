@@ -7,10 +7,12 @@ ROOT=$(cd -- "$(dirname -- "$0")" && pwd)
 [ -f "$ROOT/share/transports.tsv" ] || { echo "Transport catalog missing from portable package." >&2; exit 1; }
 [ -f "$ROOT/libexec/tor/geoip" ] || { echo "Tor geoip data missing from portable package." >&2; exit 1; }
 [ -f "$ROOT/libexec/tor/geoip6" ] || { echo "Tor geoip6 data missing from portable package." >&2; exit 1; }
+[ -f "$ROOT/bin/devfix-tunnel-chrome" ] || { echo "Selective Chrome launcher missing from portable package." >&2; exit 1; }
 
 sudo -v
 sudo mkdir -p /usr/local/bin /usr/local/libexec/devfix-tunnel/tor /usr/local/share/devfix-tunnel "/Library/Application Support/DevFixTunnel"
 sudo install -m 755 "$ROOT/bin/devfix-tunnel" /usr/local/bin/devfix-tunnel
+sudo install -m 755 "$ROOT/bin/devfix-tunnel-chrome" /usr/local/bin/devfix-tunnel-chrome
 sudo install -m 755 "$ROOT/libexec/devfix-tunnel-guardian" /usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian
 sudo rm -rf /usr/local/libexec/devfix-tunnel/tor
 sudo mkdir -p /usr/local/libexec/devfix-tunnel/tor
@@ -27,3 +29,4 @@ sudo launchctl bootout system /Library/LaunchDaemons/com.devfix.tunnel.recovery.
 sudo launchctl bootstrap system /Library/LaunchDaemons/com.devfix.tunnel.recovery.plist >/dev/null 2>&1 || sudo launchctl load -w /Library/LaunchDaemons/com.devfix.tunnel.recovery.plist >/dev/null 2>&1 || true
 echo "DevFix Tunnel installed."
 echo "Run: devfix-tunnel doctor"
+echo "Selective Chrome: devfix-tunnel-chrome https://example.com/"
