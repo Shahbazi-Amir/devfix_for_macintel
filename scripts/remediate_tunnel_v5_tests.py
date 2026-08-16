@@ -54,8 +54,9 @@ grep -Fq 'ExitNodes {de}' "$DEVFIX_TUNNEL_STATE_DIR/run/torrc" || fail "preferre
 DEVFIX_TUNNEL_TEST_EXIT_IP=203.0.113.9 "$TUNNEL" exit > "$CASE/exit.out" 2>&1 || { cat "$CASE/exit.out" >&2; fail "exit verification"; }
 grep -q '^Exit country: de$' "$CASE/exit.out" || fail "local GeoIP exit mapping"
 grep -q '^Foreign-only verification: PASS$' "$CASE/exit.out" || fail "foreign-only exit verification"
-"$TUNNEL" run /bin/sh -c 'printf "%s|%s\n" "$ALL_PROXY" "$all_proxy"' > "$CASE/run.out" || fail "run command"
-grep -q 'socks5h://127.0.0.1:29150|socks5h://127.0.0.1:29150' "$CASE/run.out" || fail "run child proxy environment"
+"$TUNNEL" run /usr/bin/env > "$CASE/run.out" || fail "run command"
+grep -q '^ALL_PROXY=socks5h://127.0.0.1:29150$' "$CASE/run.out" || fail "run child ALL_PROXY environment"
+grep -q '^all_proxy=socks5h://127.0.0.1:29150$' "$CASE/run.out" || fail "run child all_proxy environment"
 "$TUNNEL" disconnect >/dev/null 2>&1 || fail "v5 foreign policy cleanup"
 pass "V5 foreign-exit policy, exit identity, and child run environment"
 
