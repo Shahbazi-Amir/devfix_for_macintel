@@ -184,36 +184,99 @@ stop_owned_tor() {
 runtime_available() { [ -x "$TUNNEL_TOR_BIN" ] && [ -x "$TUNNEL_LYREBIRD_BIN" ]; }
 
 start_transport() {
-  requested_mode="$1"; ensure_dirs
+  requested_mode="$1"
+  ensure_dirs
   runtime_available || die "independent Tor runtime is missing under $TUNNEL_LIBEXEC_DIR; install the DevFix Tunnel package"
-  old_pid=$(state_get PID ''); old_state=$(state_get STATE ''); old_mode=$(state_get MODE '')
+
+  old_pid=$(state_get PID '')
+  old_state=$(state_get STATE '')
+  old_mode=$(state_get MODE '')
+
   if [ "$old_state" = "CONNECTED" ] && pid_is_owned "$old_pid"; then
-    if [ "$requested_mode" = "SOCKS" ] || [ "$old_mode" = "SYSTEM_PROXY" ]; then return 0; fi
+    if [ "$requested_mode" = "$old_mode" ]; then
+      return 0
+    fi
+    if [ "$old_mode" = "SYSTEM_PROXY" ]; then
+      die "an active System Proxy session already exists; disconnect or repair it before starting another transport mode"
+    fi
+    stop_owned_tor "$old_pid" || die "could not safely stop the previous tunnel-owned SOCKS transport"
+  elif [ -n "$old_pid" ] && is_pid_alive "$old_pid"; then
+    if ! pid_is_owned "$old_pid"; then
+      die "stale state references a live process not owned by DevFix Tunnel; run 'devfix-tunnel repair' after reviewing status"
+    fi
+    if [ "$old_mode" = "SYSTEM_PROXY" ]; then
+      die "stale System Proxy state with a live owned Tor process requires 'devfix-tunnel repair' before transport restart"
+    fi
+    stop_owned_tor "$old_pid" || die "could not safely stop stale tunnel-owned Tor process"
   fi
-  if [ -n "$old_pid" ] && is_pid_alive "$old_pid" && ! pid_is_owned "$old_pid"; then die "stale state references a live process not owned by DevFix Tunnel; run 'devfix-tunnel repair' after reviewing status"; fi
+
   clear_runtime_state
-  port=$(choose_socks_port "$DEFAULT_SOCKS_PORT") || die "no free local SOCKS port in $DEFAULT_SOCKS_PORT-$((DEFAULT_SOCKS_PORT + 19))"
-  write_torrc "$port"; : > "$TUNNEL_TOR_LOG"; chmod 600 "$TUNNEL_TOR_LOG" 2>/dev/null || true
-  session="$(now_epoch)-$$"; started="$(now_utc)"; write_state STARTING SOCKS '' "$port" "$session" "$started" ''
+  port=$(choose_socks_port "$DEFAULT_SOCKS_PORT") ||
+    die "no free local SOCKS port in $DEFAULT_SOCKS_PORT-$((DEFAULT_SOCKS_PORT + 19))"
+  write_torrc "$port"
+  : > "$TUNNEL_TOR_LOG"
+  chmod 600 "$TUNNEL_TOR_LOG" 2>/dev/null || true
+
+  session="$(now_epoch)-$$"
+  started="$(now_utc)"
+  write_state STARTING SOCKS '' "$port" "$session" "$started" ''
   info "Starting DevFix Tunnel Snowflake transport..."
   "$TUNNEL_TOR_BIN" -f "$TUNNEL_TORRC" >> "$TUNNEL_TOR_LOG" 2>&1 &
-  pid=$!; printf '%s\n' "$pid" > "$TUNNEL_PID_FILE"; chmod 600 "$TUNNEL_PID_FILE" 2>/dev/null || true
-  write_state BOOTSTRAPPING SOCKS "$pid" "$port" "$session" "$started" ''; log_line "session=$session state=BOOTSTRAPPING pid=$pid port=$port"
-  start_epoch=$(now_epoch); deadline=$((start_epoch + BOOTSTRAP_TIMEOUT)); last_progress_epoch=$start_epoch; last_percent=-1
+  pid=$!
+  printf '%s\n' "$pid" > "$TUNNEL_PID_FILE"
+  chmod 600 "$TUNNEL_PID_FILE" 2>/dev/null || true
+  write_state BOOTSTRAPPING SOCKS "$pid" "$port" "$session" "$started" ''
+  log_line "session=$session state=BOOTSTRAPPING pid=$pid port=$port"
+
+  start_epoch=$(now_epoch)
+  deadline=$((start_epoch + BOOTSTRAP_TIMEOUT))
+  last_progress_epoch=$start_epoch
+  last_percent=-1
   while [ "$(now_epoch)" -lt "$deadline" ]; do
-    if ! is_pid_alive "$pid"; then write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''; err "TRANSPORT_PROCESS_FAILURE: Tor exited before bootstrap completed."; return 1; fi
+    if ! is_pid_alive "$pid"; then
+      write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''
+      err "TRANSPORT_PROCESS_FAILURE: Tor exited before bootstrap completed."
+      return 1
+    fi
     percent=$(bootstrap_percent)
-    if [ "$percent" != "$last_percent" ]; then info "Bootstrapped ${percent}%"; last_percent="$percent"; last_progress_epoch=$(now_epoch); fi
-    if [ "$percent" -ge 100 ] 2>/dev/null; then break; fi
-    if [ $(( $(now_epoch) - last_progress_epoch )) -ge "$STALL_TIMEOUT" ]; then stop_owned_tor "$pid" || true; write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''; err "SNOWFLAKE_BOOTSTRAP_FAILURE: bootstrap stalled at ${percent}% for ${STALL_TIMEOUT}s."; return 1; fi
+    if [ "$percent" != "$last_percent" ]; then
+      info "Bootstrapped ${percent}%"
+      last_percent="$percent"
+      last_progress_epoch=$(now_epoch)
+    fi
+    if [ "$percent" -ge 100 ] 2>/dev/null; then
+      break
+    fi
+    if [ $(( $(now_epoch) - last_progress_epoch )) -ge "$STALL_TIMEOUT" ]; then
+      stop_owned_tor "$pid" || true
+      write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''
+      err "SNOWFLAKE_BOOTSTRAP_FAILURE: bootstrap stalled at ${percent}% for ${STALL_TIMEOUT}s."
+      return 1
+    fi
     sleep 1
   done
+
   percent=$(bootstrap_percent)
-  if [ "$percent" -lt 100 ] 2>/dev/null; then stop_owned_tor "$pid" || true; write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''; err "TIMEOUT: Snowflake did not reach 100% within ${BOOTSTRAP_TIMEOUT}s."; return 1; fi
-  write_state VALIDATING SOCKS "$pid" "$port" "$session" "$started" ''; info "Snowflake bootstrap complete; validating SOCKS route..."
-  if ! validate_socks_route "$port"; then stop_owned_tor "$pid" || true; write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''; err "ROUTE_VALIDATION_FAILURE: Tor reached 100% but routed HTTPS validation failed."; return 1; fi
-  write_state CONNECTED SOCKS "$pid" "$port" "$session" "$started" ''; log_line "session=$session state=CONNECTED mode=SOCKS pid=$pid port=$port"
-  info "Snowflake transport is ready."; info "Local SOCKS: socks5h://127.0.0.1:$port"
+  if [ "$percent" -lt 100 ] 2>/dev/null; then
+    stop_owned_tor "$pid" || true
+    write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''
+    err "TIMEOUT: Snowflake did not reach 100% within ${BOOTSTRAP_TIMEOUT}s."
+    return 1
+  fi
+
+  write_state VALIDATING SOCKS "$pid" "$port" "$session" "$started" ''
+  info "Snowflake bootstrap complete; validating SOCKS route..."
+  if ! validate_socks_route "$port"; then
+    stop_owned_tor "$pid" || true
+    write_state FAILED SOCKS "$pid" "$port" "$session" "$started" ''
+    err "ROUTE_VALIDATION_FAILURE: Tor reached 100% but routed HTTPS validation failed."
+    return 1
+  fi
+
+  write_state CONNECTED SOCKS "$pid" "$port" "$session" "$started" ''
+  log_line "session=$session state=CONNECTED mode=SOCKS pid=$pid port=$port"
+  info "Snowflake transport is ready."
+  info "Local SOCKS: socks5h://127.0.0.1:$port"
 }
 
 marker_get() { file="$1"; key="$2"; default_value="${3:-}"; [ -f "$file" ] || { printf '%s' "$default_value"; return; }; value=$(sed -n "s/^${key}=//p" "$file" | tail -n 1); [ -n "$value" ] && printf '%s' "$value" || printf '%s' "$default_value"; }
@@ -260,12 +323,65 @@ request_proxy_restore() {
 }
 
 cmd_connect() {
-  mode="system"; service=""
-  if [ "${1:-}" = "socks" ]; then mode="socks"; shift; elif [ "${1:-}" = "system" ]; then mode="system"; shift; fi
-  while [ "$#" -gt 0 ]; do case "$1" in --service) [ "$#" -ge 2 ] || die "--service requires a network service name"; service="$2"; shift 2 ;; *) die "unknown connect option: $1" ;; esac; done
-  if [ "$mode" = "socks" ]; then start_transport SOCKS || exit 1; info "Connected in SOCKS-only mode. macOS System Proxy was not changed."; return 0; fi
+  mode="system"
+  service=""
+  if [ "${1:-}" = "socks" ]; then
+    mode="socks"
+    shift
+  elif [ "${1:-}" = "system" ]; then
+    mode="system"
+    shift
+  fi
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --service)
+        [ "$#" -ge 2 ] || die "--service requires a network service name"
+        service="$2"
+        shift 2
+        ;;
+      *) die "unknown connect option: $1" ;;
+    esac
+  done
+
+  existing_state=$(state_get STATE DISCONNECTED)
+  existing_mode=$(state_get MODE NONE)
+  existing_pid=$(state_get PID '')
+  if [ "$existing_state" = "CONNECTED" ] && pid_is_owned "$existing_pid"; then
+    case "$mode:$existing_mode" in
+      system:SYSTEM_PROXY)
+        if [ -f "$TUNNEL_PROXY_FAILED" ]; then
+          die "existing System Proxy session is degraded; run 'devfix-tunnel status' and 'devfix-tunnel repair'"
+        fi
+        info "DevFix Tunnel is already connected in System Proxy mode."
+        return 0
+        ;;
+      socks:SOCKS)
+        info "DevFix Tunnel is already connected in SOCKS-only mode."
+        return 0
+        ;;
+      socks:SYSTEM_PROXY)
+        die "already connected in System Proxy mode; disconnect before switching to SOCKS-only mode"
+        ;;
+      system:SOCKS)
+        die "already connected in SOCKS-only mode; disconnect before switching to System Proxy mode"
+        ;;
+    esac
+  fi
+
+  if [ "$mode" = "socks" ]; then
+    start_transport SOCKS || exit 1
+    info "Connected in SOCKS-only mode. macOS System Proxy was not changed."
+    return 0
+  fi
+
   start_transport SYSTEM_PROXY || exit 1
-  if ! start_system_proxy_guardian "$service"; then pid=$(state_get PID ''); stop_owned_tor "$pid" || true; clear_runtime_state; die "System Proxy activation failed; transport was rolled back"; fi
+  if ! start_system_proxy_guardian "$service"; then
+    pid=$(state_get PID '')
+    stop_owned_tor "$pid" || true
+    clear_runtime_state
+    die "System Proxy activation failed; transport was rolled back"
+  fi
   info "Connected with DevFix Tunnel System Proxy."
 }
 
@@ -287,6 +403,24 @@ cmd_disconnect() {
   clear_runtime_state; log_line "session=$session state=DISCONNECTED"; info "DevFix Tunnel disconnected."; info "Previous System Proxy state restored or no tunnel-owned proxy was active."
 }
 
+
+cmd_restart() {
+  requested="${1:-}"
+  if [ -z "$requested" ]; then
+    current_mode=$(state_get MODE NONE)
+    case "$current_mode" in
+      SOCKS) requested="socks" ;;
+      SYSTEM_PROXY) requested="system" ;;
+      *) requested="system" ;;
+    esac
+  fi
+  case "$requested" in
+    system|socks) ;;
+    *) die "restart mode must be 'system' or 'socks'" ;;
+  esac
+  cmd_disconnect || return 1
+  cmd_connect "$requested"
+}
 cmd_repair() {
   ensure_dirs; session=$(state_get SESSION '')
   if [ -x "$TUNNEL_GUARDIAN_BIN" ]; then args=(recover --user-state "$TUNNEL_STATE_ROOT" --uid "$(id -u)" --gid "$(id -g)"); [ -n "$session" ] && args+=(--session "$session"); if [ "$TUNNEL_TEST_MODE" = "1" ]; then "$TUNNEL_GUARDIAN_BIN" "${args[@]}" || true; elif [ "$(uname -s 2>/dev/null || true)" = "Darwin" ]; then sb=$(sudo_bin) || die "sudo is required for repair"; "$sb" "$TUNNEL_GUARDIAN_BIN" "${args[@]}" || die "guardian could not safely repair System Proxy state"; fi; fi
@@ -342,7 +476,7 @@ case "${1:-help}" in
   connect) shift; cmd_connect "$@" ;;
   status) shift; cmd_status "$@" ;;
   disconnect) shift; cmd_disconnect "$@" ;;
-  restart) shift; saved_mode="${1:-system}"; cmd_disconnect || exit 1; cmd_connect "$saved_mode" ;;
+  restart) shift; cmd_restart "$@" ;;
   repair) shift; cmd_repair "$@" ;;
   doctor) shift; cmd_doctor "$@" ;;
   open) shift; cmd_open "$@" ;;

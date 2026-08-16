@@ -1,0 +1,3 @@
+# Remediation 006 — GITHUB_WORKFLOW_WRITE_PERMISSION
+
+The V4 product patch, syntax, ShellCheck, and full integration matrix all passed in run `31937548051`, but its self-cleaning commit was rejected because a GitHub App/`GITHUB_TOKEN` push was not permitted to update `.github/workflows/tunnel-ci.yml`. The product patch is therefore committed without workflow-file mutation from the one-shot job. The Intel macOS command-contract workflow edit is applied separately through the authorized GitHub Connector, then the official CI/package gates are retriggered on the resulting code identity. No permission bypass and no test weakening are used.

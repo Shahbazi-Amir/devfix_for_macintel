@@ -10,6 +10,7 @@ SYSTEM_STATE_DIR="${DEVFIX_TUNNEL_SYSTEM_STATE_DIR:-/Library/Application Support
 NETWORKSETUP_BIN="${DEVFIX_TUNNEL_NETWORKSETUP_BIN:-/usr/sbin/networksetup}"
 ROUTE_BIN="${DEVFIX_TUNNEL_ROUTE_BIN:-/sbin/route}"
 SLEEP_BIN="${DEVFIX_TUNNEL_SLEEP_BIN:-/bin/sleep}"
+USER_SUDO_BIN="${DEVFIX_TUNNEL_USER_SUDO_BIN:-/usr/bin/sudo}"
 CURRENT_FILE="$SYSTEM_STATE_DIR/current"
 GUARDIAN_LOG="$SYSTEM_STATE_DIR/guardian.log"
 
@@ -22,7 +23,85 @@ validate_user_state() { user_state="$1"; uid="$2"; gid="$3"; case "$uid" in ''|*
 ensure_system_dir() { umask 077; mkdir -p "$SYSTEM_STATE_DIR" || die "cannot create system guardian state"; chmod 700 "$SYSTEM_STATE_DIR" 2>/dev/null || true; }
 log_line() { ensure_system_dir; printf '%s %s\n' "$(now_utc)" "$*" >> "$GUARDIAN_LOG" 2>/dev/null || true; }
 
-safe_user_marker() { user_state="$1"; name="$2"; content="$3"; uid="${4:-}"; gid="${5:-}"; run_dir="$user_state/run"; mkdir -p "$run_dir" 2>/dev/null || return 1; tmp="$run_dir/$name.tmp.$$"; printf '%s\n' "$content" > "$tmp" || return 1; chmod 600 "$tmp" 2>/dev/null || true; if [ -n "$uid" ] && [ -n "$gid" ] && [ "$TEST_MODE" != "1" ]; then chown "$uid:$gid" "$tmp" 2>/dev/null || true; fi; mv "$tmp" "$run_dir/$name"; }
+user_exec() {
+  uid="$1"
+  shift
+  case "$uid" in ''|*[!0-9]*) return 1 ;; esac
+  [ -x "$USER_SUDO_BIN" ] || return 1
+  "$USER_SUDO_BIN" -n -u "#$uid" "$@"
+}
+
+safe_user_marker() {
+  user_state="$1"
+  name="$2"
+  content="$3"
+  uid="${4:-}"
+  gid="${5:-}"
+  validate_user_state "$user_state" "$uid" "$gid" || return 1
+  case "$name" in ''|*/*|*'..'*) return 1 ;; esac
+  run_dir="$user_state/run"
+  tmp="$run_dir/$name.tmp.$$"
+  target="$run_dir/$name"
+
+  if [ "$TEST_MODE" = "1" ]; then
+    printf '%s\n' "$content" > "$tmp" || return 1
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$target"
+    return $?
+  fi
+
+  printf '%s\n' "$content" | user_exec "$uid" /usr/bin/tee "$tmp" >/dev/null || return 1
+  user_exec "$uid" /bin/chmod 600 "$tmp" || { user_exec "$uid" /bin/rm -f "$tmp" || true; return 1; }
+  user_exec "$uid" /bin/mv -f "$tmp" "$target"
+}
+
+safe_user_remove() {
+  user_state="$1"
+  name="$2"
+  uid="$3"
+  gid="$4"
+  validate_user_state "$user_state" "$uid" "$gid" || return 1
+  case "$name" in ''|*/*|*'..'*) return 1 ;; esac
+  target="$user_state/run/$name"
+  if [ "$TEST_MODE" = "1" ]; then
+    rm -f "$target"
+  else
+    user_exec "$uid" /bin/rm -f "$target"
+  fi
+}
+
+safe_user_marker_exists() {
+  user_state="$1"
+  name="$2"
+  uid="$3"
+  gid="$4"
+  validate_user_state "$user_state" "$uid" "$gid" || return 1
+  case "$name" in ''|*/*|*'..'*) return 1 ;; esac
+  target="$user_state/run/$name"
+  if [ "$TEST_MODE" = "1" ]; then
+    [ -f "$target" ]
+  else
+    user_exec "$uid" /bin/test -f "$target"
+  fi
+}
+
+safe_user_marker_value() {
+  user_state="$1"
+  name="$2"
+  key="$3"
+  uid="$4"
+  gid="$5"
+  validate_user_state "$user_state" "$uid" "$gid" || return 1
+  case "$name" in ''|*/*|*'..'*) return 1 ;; esac
+  case "$key" in ''|*[!A-Z0-9_]*) return 1 ;; esac
+  target="$user_state/run/$name"
+  if [ "$TEST_MODE" = "1" ]; then
+    sed -n "s/^${key}=//p" "$target" 2>/dev/null | tail -n 1
+  else
+    user_exec "$uid" /usr/bin/sed -n "s/^${key}=//p" "$target" 2>/dev/null | tail -n 1
+  fi
+}
+
 owner_get() { key="$1"; default_value="${2:-}"; [ -f "$CURRENT_FILE" ] || { printf '%s' "$default_value"; return; }; value=$(sed -n "s/^${key}=//p" "$CURRENT_FILE" | tail -n 1); [ -n "$value" ] && printf '%s' "$value" || printf '%s' "$default_value"; }
 write_owner() { session="$1"; phase="$2"; service="$3"; port="$4"; user_state="$5"; uid="$6"; gid="$7"; snapshot="$8"; guardian_pid="${9:-}"; ensure_system_dir; tmp="$CURRENT_FILE.tmp.$$"; umask 077; { printf 'SCHEMA=1\n'; printf 'SESSION=%s\n' "$session"; printf 'PHASE=%s\n' "$phase"; printf 'SERVICE=%s\n' "$service"; printf 'PORT=%s\n' "$port"; printf 'USER_STATE=%s\n' "$user_state"; printf 'UID=%s\n' "$uid"; printf 'GID=%s\n' "$gid"; printf 'SNAPSHOT=%s\n' "$snapshot"; printf 'GUARDIAN_PID=%s\n' "$guardian_pid"; printf 'UPDATED=%s\n' "$(now_utc)"; } > "$tmp" || die "cannot write guardian ownership state"; chmod 600 "$tmp" 2>/dev/null || true; mv "$tmp" "$CURRENT_FILE"; }
 ns_read() { "$NETWORKSETUP_BIN" "$@" 2>/dev/null; }
@@ -34,11 +113,76 @@ proxy_field() { data="$1"; field="$2"; printf '%s\n' "$data" | awk -F': ' -v fie
 proxy_enabled() { printf '%s\n' "$1" | grep -Eq '^(Enabled:[[:space:]]*Yes|Auto Proxy Discovery:[[:space:]]*On)$'; }
 
 capture_snapshot() { service="$1"; snapshot="$2"; umask 077; mkdir -p "$snapshot" || return 1; chmod 700 "$snapshot" 2>/dev/null || true; printf '%s\n' "$service" > "$snapshot/service"; ns_read -getsocksfirewallproxy "$service" > "$snapshot/socks" || return 1; ns_read -getwebproxy "$service" > "$snapshot/web" || return 1; ns_read -getsecurewebproxy "$service" > "$snapshot/secureweb" || return 1; ns_read -getautoproxyurl "$service" > "$snapshot/autoproxy" || return 1; if ns_read -getproxyautodiscovery "$service" > "$snapshot/autodiscovery" 2>/dev/null; then :; else printf '%s\n' 'Auto Proxy Discovery: Off' > "$snapshot/autodiscovery"; fi; ns_read -getproxybypassdomains "$service" > "$snapshot/bypass" 2>/dev/null || true; }
-snapshot_conflict_reason() { snapshot="$1"; socks=$(cat "$snapshot/socks"); web=$(cat "$snapshot/web"); secure=$(cat "$snapshot/secureweb"); auto=$(cat "$snapshot/autoproxy"); discovery=$(cat "$snapshot/autodiscovery"); if proxy_enabled "$socks"; then printf '%s' 'EXISTING_SOCKS_PROXY'; return; fi; if proxy_enabled "$web"; then printf '%s' 'EXISTING_HTTP_PROXY'; return; fi; if proxy_enabled "$secure"; then printf '%s' 'EXISTING_HTTPS_PROXY'; return; fi; if proxy_enabled "$auto"; then printf '%s' 'EXISTING_PAC_PROXY'; return; fi; if proxy_enabled "$discovery"; then printf '%s' 'EXISTING_PROXY_AUTODISCOVERY'; return; fi; printf '%s' ''; }
+snapshot_conflict_reason() {
+  snapshot="$1"
+  socks=$(cat "$snapshot/socks")
+  web=$(cat "$snapshot/web")
+  secure=$(cat "$snapshot/secureweb")
+  auto=$(cat "$snapshot/autoproxy")
+  discovery=$(cat "$snapshot/autodiscovery")
+  socks_auth=$(proxy_field "$socks" "Authenticated Proxy Enabled")
+
+  case "$socks_auth" in
+    1|Yes|YES|yes|On|ON|on)
+      printf '%s' 'EXISTING_AUTHENTICATED_SOCKS_CONFIG'
+      return
+      ;;
+  esac
+  if proxy_enabled "$socks"; then printf '%s' 'EXISTING_SOCKS_PROXY'; return; fi
+  if proxy_enabled "$web"; then printf '%s' 'EXISTING_HTTP_PROXY'; return; fi
+  if proxy_enabled "$secure"; then printf '%s' 'EXISTING_HTTPS_PROXY'; return; fi
+  if proxy_enabled "$auto"; then printf '%s' 'EXISTING_PAC_PROXY'; return; fi
+  if proxy_enabled "$discovery"; then printf '%s' 'EXISTING_PROXY_AUTODISCOVERY'; return; fi
+  printf '%s' ''
+}
+
 current_socks() { ns_read -getsocksfirewallproxy "$1"; }
 proxy_matches_owned() { service="$1"; port="$2"; data=$(current_socks "$service") || return 1; enabled=$(proxy_field "$data" Enabled); server=$(proxy_field "$data" Server); current_port=$(proxy_field "$data" Port); [ "$enabled" = "Yes" ] && { [ "$server" = "127.0.0.1" ] || [ "$server" = "localhost" ]; } && [ "$current_port" = "$port" ]; }
 apply_owned_proxy() { service="$1"; port="$2"; ns_set -setsocksfirewallproxy "$service" 127.0.0.1 "$port" off >/dev/null; ns_set -setsocksfirewallproxystate "$service" on >/dev/null; proxy_matches_owned "$service" "$port"; }
-restore_snapshot() { service="$1"; snapshot="$2"; previous=$(cat "$snapshot/socks"); previous_enabled=$(proxy_field "$previous" Enabled); previous_server=$(proxy_field "$previous" Server); previous_port=$(proxy_field "$previous" Port); if [ -n "$previous_server" ] && case "$previous_port" in ''|*[!0-9]*) false ;; *) true ;; esac; then ns_set -setsocksfirewallproxy "$service" "$previous_server" "$previous_port" off >/dev/null || return 1; fi; case "$previous_enabled" in Yes) ns_set -setsocksfirewallproxystate "$service" on >/dev/null || return 1 ;; *) ns_set -setsocksfirewallproxystate "$service" off >/dev/null || return 1 ;; esac; after=$(current_socks "$service") || return 1; after_enabled=$(proxy_field "$after" Enabled); if [ "$previous_enabled" = "Yes" ]; then [ "$after_enabled" = "Yes" ]; else [ "$after_enabled" != "Yes" ]; fi; }
+restore_snapshot() {
+  service="$1"
+  snapshot="$2"
+  previous=$(cat "$snapshot/socks")
+  previous_enabled=$(proxy_field "$previous" Enabled)
+  previous_server=$(proxy_field "$previous" Server)
+  previous_port=$(proxy_field "$previous" Port)
+  previous_auth=$(proxy_field "$previous" "Authenticated Proxy Enabled")
+
+  case "$previous_auth" in
+    1|Yes|YES|yes|On|ON|on) return 1 ;;
+  esac
+
+  if [ -n "$previous_server" ]; then
+    case "$previous_port" in
+      ''|*[!0-9]*) return 1 ;;
+      *) ns_set -setsocksfirewallproxy "$service" "$previous_server" "$previous_port" off >/dev/null || return 1 ;;
+    esac
+  fi
+
+  case "$previous_enabled" in
+    Yes) ns_set -setsocksfirewallproxystate "$service" on >/dev/null || return 1 ;;
+    *) ns_set -setsocksfirewallproxystate "$service" off >/dev/null || return 1 ;;
+  esac
+
+  after=$(current_socks "$service") || return 1
+  after_enabled=$(proxy_field "$after" Enabled)
+  after_server=$(proxy_field "$after" Server)
+  after_port=$(proxy_field "$after" Port)
+  after_auth=$(proxy_field "$after" "Authenticated Proxy Enabled")
+
+  if [ "$previous_enabled" = "Yes" ]; then
+    [ "$after_enabled" = "Yes" ] || return 1
+  else
+    [ "$after_enabled" != "Yes" ] || return 1
+  fi
+  if [ -n "$previous_server" ]; then
+    [ "$after_server" = "$previous_server" ] || return 1
+    [ "$after_port" = "$previous_port" ] || return 1
+  fi
+  case "$after_auth" in 1|Yes|YES|yes|On|ON|on) return 1 ;; esac
+  return 0
+}
+
 clear_owner_after_restore() { snapshot="$1"; if [ -d "$snapshot" ]; then rm -rf "$SYSTEM_STATE_DIR/last-restored"; mv "$snapshot" "$SYSTEM_STATE_DIR/last-restored" 2>/dev/null || rm -rf "$snapshot"; fi; rm -f "$CURRENT_FILE"; }
 
 recover_owned_proxy() {
@@ -84,7 +228,7 @@ RESULT=SNAPSHOT_ONLY_CLEARED" "$uid" "$gid" || true
           safe_user_marker "$user_state" "system-proxy.restored" "SESSION=$session
 SERVICE=$service
 RESULT=RESTORED" "$uid" "$gid" || true
-          rm -f "$user_state/run/system-proxy.ready" 2>/dev/null || true
+          safe_user_remove "$user_state" "system-proxy.ready" "$uid" "$gid" || true
           log_line "session=$session restore=success service=$service"
           return 0
         fi
@@ -111,10 +255,49 @@ REASON=PROXY_OWNERSHIP_CONFLICT_REQUIRES_MANUAL_REVIEW" "$uid" "$gid" || true
   esac
 }
 
-guardian_monitor() { session="$1"; tor_pid="$2"; service="$3"; port="$4"; user_state="$5"; uid="$6"; gid="$7"; stop_file="$user_state/run/system-proxy.stop"; original_service="$service"; while :; do if [ -f "$stop_file" ]; then requested=$(sed -n 's/^SESSION=//p' "$stop_file" | tail -n 1); if [ -z "$requested" ] || [ "$requested" = "$session" ]; then recover_owned_proxy "$session" "$user_state" "$uid" "$gid"; return $?; fi; fi; if ! kill -0 "$tor_pid" 2>/dev/null; then safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=TOR_PROCESS_DIED" "$uid" "$gid" || true; recover_owned_proxy "$session" "$user_state" "$uid" "$gid"; return $?; fi; if ! proxy_matches_owned "$service" "$port"; then write_owner "$session" CONFLICT "$service" "$port" "$user_state" "$uid" "$gid" "$(owner_get SNAPSHOT '')" "$$"; safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=PROXY_OWNERSHIP_LOST" "$uid" "$gid" || true; return 3; fi; active=$(discover_service '' 2>/dev/null || true); if [ -n "$active" ] && [ "$active" != "$original_service" ]; then safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=NETWORK_SERVICE_CHANGED" "$uid" "$gid" || true; recover_owned_proxy "$session" "$user_state" "$uid" "$gid"; return $?; fi; "$SLEEP_BIN" 1; done; }
+guardian_monitor() {
+  session="$1"
+  tor_pid="$2"
+  service="$3"
+  port="$4"
+  user_state="$5"
+  uid="$6"
+  gid="$7"
+  original_service="$service"
+
+  while :; do
+    if safe_user_marker_exists "$user_state" "system-proxy.stop" "$uid" "$gid"; then
+      requested=$(safe_user_marker_value "$user_state" "system-proxy.stop" SESSION "$uid" "$gid" || true)
+      if [ -z "$requested" ] || [ "$requested" = "$session" ]; then
+        recover_owned_proxy "$session" "$user_state" "$uid" "$gid"
+        return $?
+      fi
+    fi
+
+    if ! kill -0 "$tor_pid" 2>/dev/null; then
+      safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=TOR_PROCESS_DIED" "$uid" "$gid" || true
+      recover_owned_proxy "$session" "$user_state" "$uid" "$gid"
+      return $?
+    fi
+
+    if ! proxy_matches_owned "$service" "$port"; then
+      write_owner "$session" CONFLICT "$service" "$port" "$user_state" "$uid" "$gid" "$(owner_get SNAPSHOT '')" "$$"
+      safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=PROXY_OWNERSHIP_LOST" "$uid" "$gid" || true
+      return 3
+    fi
+
+    active=$(discover_service '' 2>/dev/null || true)
+    if [ -n "$active" ] && [ "$active" != "$original_service" ]; then
+      safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
+REASON=NETWORK_SERVICE_CHANGED" "$uid" "$gid" || true
+      recover_owned_proxy "$session" "$user_state" "$uid" "$gid"
+      return $?
+    fi
+    "$SLEEP_BIN" 1
+  done
+}
 
 cmd_apply() {
   require_root
