@@ -36,7 +36,7 @@ Routed HTTPS validation
       |                        |
       v                        v
 local SOCKS               macOS System Proxy
-(devfix-tunnel run)        (Safari/Chrome/VS Code/etc.)
+(selective/CLI)            (proxy-aware apps)
 ```
 
 System Proxy is **never enabled** until a transport reaches Tor bootstrap 100% and routed HTTPS validation passes.
@@ -108,6 +108,26 @@ devfix-tunnel connect system
 
 safely applies the validated local SOCKS route to the active macOS System Proxy service. This is intended for Safari, Chrome, VS Code/Electron, and other applications that honor macOS proxy settings.
 
+### Selective Chrome — one tunneled Chrome plus normal direct Chrome
+
+For the common case where normal Chrome should stay direct while a second Chrome is tunneled:
+
+```bash
+devfix-tunnel-chrome https://example.com/
+```
+
+If no validated route exists, this launcher starts DevFix Tunnel in SOCKS-only `auto` + `foreign-only` mode. It then launches a separate Chrome/Chromium process using a dedicated profile under the DevFix Tunnel user-state directory.
+
+The isolated Chrome process receives:
+
+```text
+--proxy-server=socks5://127.0.0.1:<tunnel-port>
+--host-resolver-rules=MAP * ~NOTFOUND , EXCLUDE 127.0.0.1
+--force-webrtc-ip-handling-policy=disable_non_proxied_udp
+```
+
+This reduces direct DNS/WebRTC bypass risk for the selectively tunneled Chrome instance without changing macOS System Proxy or the user's ordinary Chrome profile. It is still Chrome over Tor, not Tor Browser; it does not inherit Tor Browser's anti-fingerprinting protections.
+
 ### Process-scoped CLI mode
 
 Some developer tools do not reliably consume macOS System Proxy but do honor standard proxy environment variables. For those tools:
@@ -152,7 +172,7 @@ Repeated same-mode `connect` is idempotent. Switching between SOCKS and System P
 
 `0.3.0-rc1` is not represented as a packet-level full-device VPN.
 
-System Proxy can cover a large class of macOS applications, and `devfix-tunnel run` covers explicit CLI child processes, but software that bypasses System Proxy and does not honor SOCKS/proxy environment configuration is not automatically captured.
+System Proxy can cover a large class of macOS applications, selective Chrome gives an explicit split-browser workflow, and `devfix-tunnel run` covers explicit CLI child processes, but software that bypasses System Proxy and does not honor SOCKS/proxy configuration is not automatically captured.
 
 A true full-device implementation is a separate NetworkExtension / `NEPacketTunnelProvider` milestone documented in `docs/tunnel/FULL_DEVICE_VPN_ROADMAP.md`. That path requires a packet forwarding engine plus Apple Network Extension entitlement/signing/provisioning before it can truthfully be called a deployable full-device VPN.
 
@@ -168,6 +188,7 @@ devfix-tunnel connect
 devfix-tunnel status
 devfix-tunnel exit
 devfix-tunnel run curl https://example.com
+devfix-tunnel-chrome https://example.com/
 devfix-tunnel open https://check.torproject.org/
 devfix-tunnel disconnect
 devfix-tunnel repair
@@ -182,11 +203,12 @@ Before physical-Mac retesting, the exact product SHA must pass:
 - V5 multi-transport fallback tests;
 - exit-policy/GeoIP tests;
 - process-scoped `run` tests;
+- selective Chrome command/flag/profile tests;
 - all prior System Proxy ownership/restore/crash/conflict tests;
 - Intel macOS command contract;
 - inherited stable-DevFix regression on Ubuntu and Intel macOS;
 - package build and install smoke test on Intel macOS;
-- package checks for Tor runtime, transport catalog, GeoIP, guardian, and recovery LaunchDaemon;
+- package checks for Tor runtime, transport catalog, GeoIP, selective Chrome launcher, guardian, and recovery LaunchDaemon;
 - stable DevFix source-preservation check.
 
 Stable promotion still requires physical Intel Monterey acceptance of the exact package artifact.
