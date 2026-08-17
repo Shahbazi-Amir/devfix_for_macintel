@@ -118,8 +118,43 @@ Independent verification of `SHA256SUMS.txt`: **PASS** for both package files.
 
 `0.3.0-rc3` remains a Tor/SOCKS + safe macOS System Proxy/selective-app product, not a packet-level NetworkExtension VPN. Full-device routing remains a separate milestone.
 
-## Remaining release gate
+## Physical Intel Monterey acceptance — 2026-08-17
 
-The remaining gate before stable `0.3.0` is `REAL_TARGET_MAC_ACCEPTANCE_RC3` on the actual Intel Monterey target.
+The exact locked RC3 package was installed on the real Intel x86_64 Monterey target and exercised against the target network.
 
-The first RC3 physical run should stop at the route gate: exact package identity, safe upgrade, doctor, auto transport bootstrap, and live exit verification. Browser/crash/reboot acceptance follows only after a transport reaches 100% and HTTPS validation succeeds.
+Observed physical results:
+
+- package SHA-256 identity: PASS;
+- upgrade/install: PASS;
+- `devfix-tunnel version` = `0.3.0-rc3`: PASS;
+- `doctor`: PASS;
+- SOCKS-only route gate: PASS;
+- Snowflake candidate 1 reached Tor bootstrap 100%: PASS;
+- routed HTTPS validation through SOCKS: PASS;
+- live Tor exit verification returned foreign exit `23.151.8.10` / `us`: PASS;
+- System Proxy remained unchanged during the SOCKS-only route gate: PASS;
+- System Proxy mode on the active `Wi-Fi` service: PASS;
+- ordinary Chrome browsing while System Proxy mode was active: PASS by user observation;
+- normal disconnect restored the pre-session System Proxy state: PASS;
+- simulated owned Tor-process death triggered guardian degradation `TOR_PROCESS_DIED` and restored `SOCKSEnable` to `0`: PASS;
+- `repair` after simulated Tor death returned the controller to `State: DISCONNECTED`, `Mode: NONE`: PASS.
+
+Additional observations:
+
+- the persistent directory cache materially reduced later physical bootstrap time; later Snowflake sessions reused cached directory information and advanced from early handshake stages to `75%`/`100%` rapidly;
+- one `devfix-tunnel exit` request during System Proxy acceptance hit a transient LibreSSL `SSL_ERROR_SYSCALL` against `check.torproject.org`; this did not prevent the already-proven SOCKS route, Chrome browsing, System Proxy activation, or safe restoration, but should remain a tracked reliability observation;
+- Safari acceptance was not formally recorded as PASS in the captured evidence;
+- network-service-change recovery and reboot/orphan recovery remain NOT RUN on the physical target.
+
+## Remaining stable release gate
+
+RC3 core transport, SOCKS routing, System Proxy activation/restoration, and Tor-death fail-safe recovery are physically validated on the target Mac.
+
+Do not promote the product to stable `0.3.0` until the remaining physical acceptance items are explicitly closed:
+
+1. Safari HTTPS browsing while System Proxy mode is active;
+2. network-service-change recovery;
+3. reboot/orphan recovery;
+4. final review of the transient Tor Check SSL reliability observation.
+
+UI work must be isolated from this RC3 core on a separate branch and must call the validated controller rather than duplicating Tor/guardian logic.
