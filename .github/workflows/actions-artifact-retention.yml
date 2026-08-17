@@ -15,6 +15,8 @@ on:
     paths:
       - '.github/workflows/actions-artifact-retention.yml'
       - '.github/artifact-governance.json'
+      - '.github/scripts/artifact_cleanup.py'
+      - '.github/scripts/artifact_storage_monitor.py'
 
 permissions:
   actions: write
@@ -39,3 +41,6 @@ jobs:
 
       - name: Inventory, conservative cleanup, and dashboard update
         run: python3 .github/scripts/artifact_cleanup.py
+
+      - name: Publish storage and workflow monitor
+        run: python3 .github/scripts/artifact_storage_monitor.py
