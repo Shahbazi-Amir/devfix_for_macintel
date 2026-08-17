@@ -3,6 +3,7 @@ import Foundation
 
 private let cliPath = "/usr/local/bin/devfix-tunnel"
 private let chromeLauncherPath = "/usr/local/bin/devfix-tunnel-chrome"
+private let torCheckURL = "https://check.torproject.org/"
 
 private struct TunnelStatus {
     var state = "UNKNOWN"
@@ -16,12 +17,19 @@ private struct TunnelStatus {
 
     var isConnected: Bool { state == "CONNECTED" }
     var isBusy: Bool { ["STARTING", "BOOTSTRAPPING", "VALIDATING"].contains(state) }
+    var isHealthySystemProxy: Bool { isConnected && mode == "SYSTEM_PROXY" && health == "OK" && !guardian.contains("DEGRADED") }
 
     var connectedSince: Date? {
         guard let first = session.split(separator: "-").first,
               let epoch = TimeInterval(first) else { return nil }
         return Date(timeIntervalSince1970: epoch)
     }
+}
+
+private enum PendingAction {
+    case connectSafari
+    case disconnect
+    case repair
 }
 
 private final class CommandRunner {
@@ -67,20 +75,28 @@ private final class CommandRunner {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let menu = NSMenu()
+
     private let stateItem = NSMenuItem(title: "State: checking…", action: nil, keyEquivalent: "")
     private let modeItem = NSMenuItem(title: "Mode: —", action: nil, keyEquivalent: "")
-    private let routeItem = NSMenuItem(title: "Route: —", action: nil, keyEquivalent: "")
+    private let routeItem = NSMenuItem(title: "Transport: —", action: nil, keyEquivalent: "")
     private let elapsedItem = NSMenuItem(title: "Connected: —", action: nil, keyEquivalent: "")
     private let exitItem = NSMenuItem(title: "Exit: —", action: nil, keyEquivalent: "")
-    private var connectSystemItem: NSMenuItem!
-    private var connectSocksItem: NSMenuItem!
-    private var selectiveChromeItem: NSMenuItem!
+
+    private var connectSafariItem: NSMenuItem!
+    private var openSafariItem: NSMenuItem!
     private var disconnectItem: NSMenuItem!
+    private var refreshExitItem: NSMenuItem!
+    private var legacyChromeItem: NSMenuItem!
+
     private var refreshTimer: Timer?
     private var elapsedTimer: Timer?
     private var currentStatus = TunnelStatus()
+    private var pendingAction: PendingAction?
+    private var pendingSince: Date?
     private var cachedExit = "—"
-    private var operationInFlight = false
+    private var exitRefreshInFlight = false
+    private var lastExitRefresh = Date.distantPast
+    private var lastConnectedSession = ""
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -88,7 +104,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         configureMenu()
         refreshStatus()
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
             self?.refreshStatus()
         }
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -114,17 +130,13 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
 
-        connectSystemItem = NSMenuItem(title: "Connect System Proxy…", action: #selector(connectSystem), keyEquivalent: "")
-        connectSystemItem.target = self
-        menu.addItem(connectSystemItem)
+        connectSafariItem = NSMenuItem(title: "Connect Safari…", action: #selector(connectSafari), keyEquivalent: "")
+        connectSafariItem.target = self
+        menu.addItem(connectSafariItem)
 
-        connectSocksItem = NSMenuItem(title: "Connect SOCKS Only", action: #selector(connectSocks), keyEquivalent: "")
-        connectSocksItem.target = self
-        menu.addItem(connectSocksItem)
-
-        selectiveChromeItem = NSMenuItem(title: "Open Selective Chrome", action: #selector(openSelectiveChrome), keyEquivalent: "")
-        selectiveChromeItem.target = self
-        menu.addItem(selectiveChromeItem)
+        openSafariItem = NSMenuItem(title: "Open Safari", action: #selector(openSafariAction), keyEquivalent: "")
+        openSafariItem.target = self
+        menu.addItem(openSafariItem)
 
         disconnectItem = NSMenuItem(title: "Disconnect", action: #selector(disconnect), keyEquivalent: "")
         disconnectItem.target = self
@@ -132,27 +144,41 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let refreshExitItem = NSMenuItem(title: "Refresh Exit IP / Country", action: #selector(refreshExit), keyEquivalent: "")
+        refreshExitItem = NSMenuItem(title: "Refresh Exit IP / Country", action: #selector(refreshExitAction), keyEquivalent: "")
         refreshExitItem.target = self
         menu.addItem(refreshExitItem)
 
-        let openCheckItem = NSMenuItem(title: "Open Tor Check", action: #selector(openTorCheck), keyEquivalent: "")
+        let openCheckItem = NSMenuItem(title: "Open Tor Check in Safari", action: #selector(openTorCheck), keyEquivalent: "")
         openCheckItem.target = self
         menu.addItem(openCheckItem)
 
+        let advancedItem = NSMenuItem(title: "Advanced", action: nil, keyEquivalent: "")
+        let advancedMenu = NSMenu(title: "Advanced")
+
         let copySocksItem = NSMenuItem(title: "Copy SOCKS Address", action: #selector(copySocks), keyEquivalent: "")
         copySocksItem.target = self
-        menu.addItem(copySocksItem)
+        advancedMenu.addItem(copySocksItem)
+
+        legacyChromeItem = NSMenuItem(title: "Legacy: Open Selective Chrome", action: #selector(openSelectiveChrome), keyEquivalent: "")
+        legacyChromeItem.target = self
+        advancedMenu.addItem(legacyChromeItem)
 
         let repairItem = NSMenuItem(title: "Repair…", action: #selector(repair), keyEquivalent: "")
         repairItem.target = self
-        menu.addItem(repairItem)
-
-        menu.addItem(.separator())
+        advancedMenu.addItem(repairItem)
 
         let refreshItem = NSMenuItem(title: "Refresh Status", action: #selector(refreshStatusAction), keyEquivalent: "r")
         refreshItem.target = self
-        menu.addItem(refreshItem)
+        advancedMenu.addItem(refreshItem)
+
+        advancedItem.submenu = advancedMenu
+        menu.addItem(advancedItem)
+
+        menu.addItem(.separator())
+
+        let noteItem = NSMenuItem(title: "Safari Mode uses macOS System Proxy", action: nil, keyEquivalent: "")
+        noteItem.isEnabled = false
+        menu.addItem(noteItem)
 
         let quitItem = NSMenuItem(title: "Quit DevFix Tunnel UI", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -182,42 +208,98 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshStatus() {
-        guard !operationInFlight else { return }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let (code, output) = CommandRunner.runSync(cliPath, ["status"])
             let parsed = self?.parseStatus(output) ?? TunnelStatus()
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                let previous = self.currentStatus
                 if code == 127 {
                     self.currentStatus = TunnelStatus(state: "NOT_INSTALLED")
                 } else {
                     self.currentStatus = parsed
                 }
+                self.handlePendingAction(previous: previous, current: self.currentStatus)
                 self.renderStatus()
+                self.maybeRefreshExit()
             }
+        }
+    }
+
+    private func handlePendingAction(previous: TunnelStatus, current: TunnelStatus) {
+        guard let action = pendingAction else { return }
+
+        switch action {
+        case .connectSafari:
+            if current.isHealthySystemProxy {
+                pendingAction = nil
+                pendingSince = nil
+                if current.session != lastConnectedSession {
+                    lastConnectedSession = current.session
+                    cachedExit = "checking…"
+                    lastExitRefresh = Date.distantPast
+                    openSafari(url: torCheckURL)
+                }
+            } else if current.state == "FAILED" || current.guardian.contains("DEGRADED") {
+                pendingAction = nil
+                pendingSince = nil
+                showAlert(title: "DevFix Tunnel", message: "Safari connection failed. The Terminal window contains the detailed error.")
+            }
+
+        case .disconnect, .repair:
+            if current.state == "DISCONNECTED" && current.mode == "NONE" {
+                pendingAction = nil
+                pendingSince = nil
+                cachedExit = "—"
+                lastConnectedSession = ""
+            }
+        }
+    }
+
+    private func pendingLabel() -> String? {
+        guard let action = pendingAction else { return nil }
+        switch action {
+        case .connectSafari:
+            if currentStatus.isBusy { return "CONNECTING…" }
+            if let since = pendingSince, Date().timeIntervalSince(since) > 5 {
+                return "WAITING FOR TERMINAL AUTHORIZATION…"
+            }
+            return "STARTING SAFARI MODE…"
+        case .disconnect:
+            return "DISCONNECTING…"
+        case .repair:
+            return "REPAIRING…"
         }
     }
 
     private func renderStatus() {
         let s = currentStatus
-        stateItem.title = "State: \(s.state)"
-        modeItem.title = "Mode: \(s.mode)"
+        stateItem.title = "State: \(pendingLabel() ?? s.state)"
+
+        if s.mode == "SYSTEM_PROXY" {
+            modeItem.title = "Mode: Safari Mode (System Proxy)"
+        } else if s.mode == "SOCKS" {
+            modeItem.title = "Mode: SOCKS (not Safari Mode)"
+        } else {
+            modeItem.title = "Mode: \(s.mode)"
+        }
 
         var routeParts: [String] = []
         if !s.transport.isEmpty { routeParts.append(s.transport) }
         if !s.service.isEmpty { routeParts.append(s.service) }
-        if !s.health.isEmpty { routeParts.append(s.health) }
+        if !s.health.isEmpty { routeParts.append("Health \(s.health)") }
         if !s.guardian.isEmpty { routeParts.append(s.guardian) }
-        routeItem.title = "Route: " + (routeParts.isEmpty ? "—" : routeParts.joined(separator: " • "))
+        routeItem.title = "Transport: " + (routeParts.isEmpty ? "—" : routeParts.joined(separator: " • "))
         exitItem.title = "Exit: \(cachedExit)"
         updateElapsed()
         updateStatusIcon(for: s)
 
-        let canConnect = !s.isConnected && !s.isBusy && !operationInFlight
-        connectSystemItem.isEnabled = canConnect
-        connectSocksItem.isEnabled = canConnect
-        selectiveChromeItem.isEnabled = !operationInFlight
-        disconnectItem.isEnabled = (s.isConnected || s.isBusy) && !operationInFlight
+        let noPending = pendingAction == nil
+        connectSafariItem.isEnabled = noPending && !s.isConnected && !s.isBusy
+        openSafariItem.isEnabled = noPending && s.isHealthySystemProxy
+        disconnectItem.isEnabled = (s.isConnected || s.isBusy || pendingAction != nil)
+        refreshExitItem.isEnabled = noPending && s.isConnected && !exitRefreshInFlight
+        legacyChromeItem.isEnabled = noPending && !s.isBusy
     }
 
     private func updateElapsed() {
@@ -237,9 +319,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         let symbol: String
         if status.guardian.contains("DEGRADED") || status.state == "FAILED" {
             symbol = "exclamationmark.triangle"
+        } else if status.isHealthySystemProxy {
+            symbol = "safari"
         } else if status.isConnected {
             symbol = "network"
-        } else if status.isBusy {
+        } else if status.isBusy || pendingAction != nil {
             symbol = "arrow.triangle.2.circlepath"
         } else {
             symbol = "network.slash"
@@ -250,94 +334,124 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = ""
         } else {
             button.image = nil
-            button.title = status.isConnected ? "DevFix ✓" : "DevFix"
+            button.title = status.isHealthySystemProxy ? "Safari ✓" : "DevFix"
         }
-        button.toolTip = "DevFix Tunnel — \(status.state)"
+        button.toolTip = "DevFix Tunnel — \(pendingLabel() ?? status.state)"
     }
 
-    private func beginOperation(_ label: String) {
-        operationInFlight = true
+    private func openTerminalCommand(_ command: String, action: PendingAction) {
+        guard pendingAction == nil else { return }
+        pendingAction = action
+        pendingSince = Date()
         renderStatus()
-        stateItem.title = "State: \(label)"
-    }
 
-    private func finishOperation(code: Int32, output: String, successMessage: String) {
-        operationInFlight = false
-        refreshStatus()
-        if code != 0 {
-            showAlert(title: "DevFix Tunnel", message: output.isEmpty ? "Command failed with code \(code)." : output)
-        } else if !successMessage.isEmpty {
-            statusItem.button?.toolTip = successMessage
-        }
-    }
-
-    @objc private func connectSocks() {
-        beginOperation("CONNECTING SOCKS…")
-        CommandRunner.run(cliPath, ["connect", "socks"]) { [weak self] code, output in
-            self?.finishOperation(code: code, output: output, successMessage: "SOCKS route connected")
-        }
-    }
-
-    @objc private func connectSystem() {
-        let script = "tell application \"Terminal\"\nactivate\ndo script \"/usr/local/bin/devfix-tunnel connect system\"\nend tell"
+        let escaped = command.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        let script = "tell application \"Terminal\"\nactivate\ndo script \"\(escaped)\"\nend tell"
         CommandRunner.run("/usr/bin/osascript", ["-e", script]) { [weak self] code, output in
+            guard let self = self else { return }
             if code != 0 {
-                self?.showAlert(title: "DevFix Tunnel", message: output)
+                self.pendingAction = nil
+                self.pendingSince = nil
+                self.renderStatus()
+                self.showAlert(title: "DevFix Tunnel", message: output.isEmpty ? "Could not open Terminal." : output)
             }
-            self?.refreshStatus()
         }
     }
 
-    @objc private func openSelectiveChrome() {
-        guard FileManager.default.isExecutableFile(atPath: chromeLauncherPath) else {
-            showAlert(title: "DevFix Tunnel", message: "Selective Chrome launcher is not installed.")
+    @objc private func connectSafari() {
+        if currentStatus.isHealthySystemProxy {
+            openSafari(url: torCheckURL)
             return
         }
-        beginOperation("OPENING SELECTIVE CHROME…")
-        CommandRunner.run(chromeLauncherPath, ["https://check.torproject.org/"]) { [weak self] code, output in
-            self?.finishOperation(code: code, output: output, successMessage: "Selective Chrome launched")
+        guard currentStatus.state == "DISCONNECTED" && currentStatus.mode == "NONE" else {
+            showAlert(title: "DevFix Tunnel", message: "Disconnect the current tunnel mode before starting Safari Mode.")
+            return
+        }
+        openTerminalCommand("/usr/local/bin/devfix-tunnel connect system", action: .connectSafari)
+    }
+
+    @objc private func openSafariAction() {
+        openSafari(url: torCheckURL)
+    }
+
+    private func openSafari(url: String) {
+        CommandRunner.run("/usr/bin/open", ["-a", "Safari", url]) { [weak self] code, output in
+            if code != 0 {
+                self?.showAlert(title: "DevFix Tunnel", message: output.isEmpty ? "Safari could not be opened." : output)
+            }
         }
     }
 
     @objc private func disconnect() {
-        beginOperation("DISCONNECTING…")
-        CommandRunner.run(cliPath, ["disconnect"]) { [weak self] code, output in
-            self?.cachedExit = "—"
-            self?.finishOperation(code: code, output: output, successMessage: "Disconnected safely")
-        }
+        openTerminalCommand("/usr/local/bin/devfix-tunnel disconnect", action: .disconnect)
     }
 
-    @objc private func refreshExit() {
-        guard currentStatus.isConnected else {
-            showAlert(title: "DevFix Tunnel", message: "Connect the tunnel before checking the exit.")
-            return
+    private func maybeRefreshExit() {
+        guard currentStatus.isConnected, pendingAction == nil, !exitRefreshInFlight else { return }
+        if currentStatus.session != lastConnectedSession {
+            lastConnectedSession = currentStatus.session
+            cachedExit = "checking…"
+            lastExitRefresh = Date.distantPast
         }
+        guard Date().timeIntervalSince(lastExitRefresh) >= 60 else { return }
+        refreshExit(showFailure: false)
+    }
+
+    private func refreshExit(showFailure: Bool) {
+        guard currentStatus.isConnected, !exitRefreshInFlight else { return }
+        exitRefreshInFlight = true
         exitItem.title = "Exit: checking…"
         CommandRunner.run(cliPath, ["exit"]) { [weak self] code, output in
             guard let self = self else { return }
+            self.exitRefreshInFlight = false
+            self.lastExitRefresh = Date()
             if code == 0 {
-                let ip = output.split(separator: "\n").first(where: { $0.hasPrefix("Tor exit IP:") }).map { String($0).replacingOccurrences(of: "Tor exit IP:", with: "").trimmingCharacters(in: .whitespaces) }
-                let country = output.split(separator: "\n").first(where: { $0.hasPrefix("Exit country:") }).map { String($0).replacingOccurrences(of: "Exit country:", with: "").trimmingCharacters(in: .whitespaces) }
+                let lines = output.split(separator: "\n").map(String.init)
+                let ip = lines.first(where: { $0.hasPrefix("Tor exit IP:") })?.replacingOccurrences(of: "Tor exit IP:", with: "").trimmingCharacters(in: .whitespaces)
+                let country = lines.first(where: { $0.hasPrefix("Exit country:") })?.replacingOccurrences(of: "Exit country:", with: "").trimmingCharacters(in: .whitespaces)
                 if let ip = ip, let country = country {
                     self.cachedExit = "\(ip) • \(country.uppercased())"
                 } else {
-                    self.cachedExit = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.cachedExit = "connected"
                 }
             } else {
-                self.cachedExit = "unavailable"
-                self.showAlert(title: "Exit check failed", message: output)
+                self.cachedExit = "unavailable — retry"
+                if showFailure {
+                    self.showAlert(title: "Exit check failed", message: output.isEmpty ? "The tunnel is connected, but the exit lookup failed." : output)
+                }
             }
-            self.exitItem.title = "Exit: \(self.cachedExit)"
+            self.renderStatus()
         }
     }
 
+    @objc private func refreshExitAction() {
+        refreshExit(showFailure: true)
+    }
+
     @objc private func openTorCheck() {
-        if currentStatus.mode == "SOCKS" {
-            openSelectiveChrome()
+        guard currentStatus.isHealthySystemProxy else {
+            showAlert(title: "DevFix Tunnel", message: "Connect Safari Mode first.")
             return
         }
-        guard let url = URL(string: "https://check.torproject.org/") else { return }
-        NSWorkspace.shared.open(url)
+        openSafari(url: torCheckURL)
+    }
+
+    @objc private func openSelectiveChrome() {
+        guard pendingAction == nil else { return }
+        guard FileManager.default.isExecutableFile(atPath: chromeLauncherPath) else {
+            showAlert(title: "DevFix Tunnel", message: "Selective Chrome launcher is not installed.")
+            return
+        }
+        if currentStatus.mode == "SYSTEM_PROXY" {
+            showAlert(title: "DevFix Tunnel", message: "Disconnect Safari Mode before using the legacy Selective Chrome mode.")
+            return
+        }
+        CommandRunner.run(chromeLauncherPath, [torCheckURL]) { [weak self] code, output in
+            if code != 0 {
+                self?.showAlert(title: "DevFix Tunnel", message: output.isEmpty ? "Selective Chrome failed." : output)
+            }
+            self?.refreshStatus()
+        }
     }
 
     @objc private func copySocks() {
@@ -347,10 +461,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func repair() {
-        let script = "tell application \"Terminal\"\nactivate\ndo script \"/usr/local/bin/devfix-tunnel repair\"\nend tell"
-        CommandRunner.run("/usr/bin/osascript", ["-e", script]) { [weak self] _, _ in
-            self?.refreshStatus()
-        }
+        openTerminalCommand("/usr/local/bin/devfix-tunnel repair", action: .repair)
     }
 
     @objc private func refreshStatusAction() {
