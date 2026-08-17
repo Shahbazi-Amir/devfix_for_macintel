@@ -96,8 +96,11 @@ def main():
         account_free_line = "**UNKNOWN**"
         account_used_line = "**UNKNOWN**"
 
-    in_progress = request(f"/repos/{REPO}/actions/runs?status=in_progress&per_page=1").get("total_count", 0)
-    queued = request(f"/repos/{REPO}/actions/runs?status=queued&per_page=1").get("total_count", 0)
+    current_run_id = int(os.environ.get("GITHUB_RUN_ID", "0") or 0)
+    in_progress_runs = paginate(f"/repos/{REPO}/actions/runs?status=in_progress", "workflow_runs")
+    queued_runs = paginate(f"/repos/{REPO}/actions/runs?status=queued", "workflow_runs")
+    in_progress = sum(1 for run in in_progress_runs if run.get("id") != current_run_id)
+    queued = sum(1 for run in queued_runs if run.get("id") != current_run_id)
     total_runs = request(f"/repos/{REPO}/actions/runs?per_page=1").get("total_count", 0)
 
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -128,8 +131,8 @@ def main():
         "### Workflow monitor",
         "",
         f"- Total workflow runs: **{total_runs}**",
-        f"- In progress: **{in_progress}**",
-        f"- Queued: **{queued}**",
+        f"- In progress (excluding this monitor run): **{in_progress}**",
+        f"- Queued (excluding this monitor run): **{queued}**",
         "",
         "### Major cleanup evidence",
         "",
@@ -172,8 +175,8 @@ def main():
         "used_vs_baseline_percent": round(used_vs_baseline, 2),
         "reclaimed_vs_baseline_percent": round(reclaimed_vs_baseline, 2),
         "account_capacity_status": account_capacity_status,
-        "in_progress_runs": in_progress,
-        "queued_runs": queued,
+        "in_progress_runs_excluding_self": in_progress,
+        "queued_runs_excluding_self": queued,
     }, indent=2))
 
 
