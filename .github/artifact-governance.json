@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "repository": "Shahbazi-Amir/devfix_for_macintel",
   "local_dashboard": {
     "issue_number": 1,
@@ -8,16 +8,37 @@
   "cleanup": {
     "workflow_path": ".github/workflows/actions-artifact-retention.yml",
     "engine_path": ".github/scripts/artifact_cleanup.py",
+    "monitor_path": ".github/scripts/artifact_storage_monitor.py",
     "policy": "conservative-latest-successful-per-known-family",
-    "explicit_protected_artifact_ids": [9269052322, 9274817412],
+    "explicit_protected_artifact_ids": [
+      9269052322,
+      9274817412
+    ],
     "unknown_families": "preserve",
     "active_or_queued_runs": "preserve",
     "release_deployment_audit_governance": "preserve"
   },
   "storage_metrics": {
     "repository_metric": "REPOSITORY_LIVE_ARTIFACT_STORAGE",
+    "baseline_live_bytes": 1963825439,
+    "baseline_live_mib": 1872.85,
+    "baseline_artifact_count": 70,
+    "baseline_captured_at": "2026-08-17T03:40:37Z",
     "account_quota_metric": "ACCOUNT_QUOTA_STATUS",
-    "account_capacity": "UNKNOWN_ACCOUNT_CAPACITY"
+    "account_capacity_bytes": null,
+    "account_capacity_status": "UNAVAILABLE_TO_INTEGRATION",
+    "account_capacity_reason": "GitHub billing API returned HTTP 403: Resource not accessible by integration. Repository-local artifact bytes remain exact; account total/free capacity must not be guessed."
+  },
+  "major_cleanup": {
+    "run_id": 31991914087,
+    "commit": "f68c588a41b1e6691802e3a64273f587c6528035",
+    "artifacts_before": 70,
+    "bytes_before": 1963825439,
+    "artifacts_deleted": 63,
+    "bytes_freed": 1793502531,
+    "artifacts_after": 7,
+    "bytes_after": 170322908,
+    "errors": 0
   },
   "central_dashboard": {
     "status": "metadata_ready_not_connected",
@@ -33,6 +54,8 @@
   },
   "notes": [
     "Do not treat repository-local artifact bytes as the owner's entire billing usage.",
+    "The Storage Monitor reports exact repository-local bytes and a relative meter against the recorded pre-cleanup high-water mark.",
+    "Account total/free capacity is UNKNOWN until a billing-capable credential is intentionally provided; no quota number is guessed.",
     "Scheduled workflows execute from the default branch; this integration remains staged until intentionally promoted.",
     "No token or secret is stored in this file."
   ]
