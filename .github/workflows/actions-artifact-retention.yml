@@ -1,0 +1,400 @@
+name: Actions Artifact Retention
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Inventory and report without deleting artifacts
+        required: false
+        type: boolean
+        default: false
+  schedule:
+    - cron: '23 3 * * *'
+  push:
+    branches: [feature/devfix-tunnel-ui]
+    paths:
+      - '.github/workflows/actions-artifact-retention.yml'
+      - '.github/artifact-governance.json'
+
+permissions:
+  actions: write
+  issues: write
+  contents: read
+
+concurrency:
+  group: actions-artifact-retention-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      DASHBOARD_ISSUE: '1'
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      PROTECTED_ARTIFACT_IDS: '9269052322,9274817412'
+    steps:
+      - name: Inventory, conservative cleanup, and dashboard update
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import collections
+          import datetime as dt
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ['GH_TOKEN']
+          repo = os.environ['REPO']
+          dashboard_issue = int(os.environ['DASHBOARD_ISSUE'])
+          dry_run = os.environ.get('DRY_RUN', 'false').lower() in ('1', 'true', 'yes')
+          explicit_protected = {
+              int(x) for x in os.environ.get('PROTECTED_ARTIFACT_IDS', '').split(',') if x.strip()
+          }
+          api_root = 'https://api.github.com'
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'devfix-artifact-retention',
+          }
+
+          def request(path, method='GET', body=None):
+              url = path if path.startswith('http') else api_root + path
+              data = None if body is None else json.dumps(body).encode('utf-8')
+              req = urllib.request.Request(url, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      raw = r.read()
+                      if not raw:
+                          return None
+                      return json.loads(raw.decode('utf-8'))
+              except urllib.error.HTTPError as e:
+                  detail = e.read().decode('utf-8', 'replace')
+                  raise RuntimeError(f'{method} {url} -> HTTP {e.code}: {detail}') from e
+
+          def paginate(path, key):
+              items = []
+              page = 1
+              sep = '&' if '?' in path else '?'
+              while True:
+                  payload = request(f'{path}{sep}per_page=100&page={page}')
+                  batch = payload.get(key, [])
+                  items.extend(batch)
+                  if len(batch) < 100:
+                      return items
+                  page += 1
+
+          def mib(n):
+              return n / 1024 / 1024
+
+          def family(name):
+              if name == 'DevFixTunnel-0.3.0-rc3-safari-preview-macos-x86_64':
+                  return 'tunnel-ui-safari'
+              if name == 'DevFixTunnel-0.3.0-rc3-ui-preview-macos-x86_64':
+                  return 'tunnel-ui-legacy'
+              m = re.fullmatch(r'DevFixTunnel-(\d+\.\d+\.\d+-rc\d+)-macos-x86_64', name)
+              if m:
+                  return f'tunnel-package:{m.group(1)}'
+              if re.fullmatch(r'DevFix-[0-9a-f]{40}', name):
+                  return 'devfix-main-package'
+              return None
+
+          run_cache = {}
+          def get_run(run_id):
+              if run_id not in run_cache:
+                  run_cache[run_id] = request(f'/repos/{repo}/actions/runs/{run_id}')
+              return run_cache[run_id]
+
+          def inventory():
+              return paginate(f'/repos/{repo}/actions/artifacts?', 'artifacts')
+
+          before = inventory()
+          before_live = [a for a in before if not a.get('expired')]
+          before_expired = [a for a in before if a.get('expired')]
+          bytes_before = sum(a.get('size_in_bytes', 0) for a in before_live)
+
+          active_runs = []
+          for status in ('in_progress', 'queued'):
+              active_runs += paginate(f'/repos/{repo}/actions/runs?status={status}', 'workflow_runs')
+          active_run_ids = {r['id'] for r in active_runs}
+
+          groups = collections.defaultdict(list)
+          unknown = []
+          for artifact in before_live:
+              fam = family(artifact['name'])
+              if fam is None:
+                  unknown.append(artifact)
+              else:
+                  groups[fam].append(artifact)
+
+          protected_ids = set(explicit_protected)
+          protected_reason = {i: 'explicit project evidence protection' for i in explicit_protected}
+
+          # Unknown families fail closed.
+          for artifact in unknown:
+              protected_ids.add(artifact['id'])
+              protected_reason[artifact['id']] = 'unknown artifact family; fail-safe preserve'
+
+          # Preserve anything associated with an active run.
+          for artifact in before_live:
+              if artifact['workflow_run']['id'] in active_run_ids:
+                  protected_ids.add(artifact['id'])
+                  protected_reason[artifact['id']] = 'active or queued workflow run'
+
+          # Preserve release/deployment/audit/governance provenance, and the newest
+          # successful artifact in every known deliverable family.
+          for fam, artifacts in groups.items():
+              successful = []
+              for artifact in artifacts:
+                  run = get_run(artifact['workflow_run']['id'])
+                  run_name = (run.get('name') or '').lower()
+                  if any(word in run_name for word in ('release', 'deploy', 'audit', 'governance')):
+                      protected_ids.add(artifact['id'])
+                      protected_reason[artifact['id']] = f'protected workflow provenance: {run.get("name")}'
+                  if run.get('status') == 'completed' and run.get('conclusion') == 'success':
+                      successful.append(artifact)
+              if successful:
+                  latest = max(successful, key=lambda a: a.get('created_at') or '')
+                  protected_ids.add(latest['id'])
+                  protected_reason[latest['id']] = f'latest successful artifact for {fam}'
+              else:
+                  # No verified successful survivor means preserve the whole family.
+                  for artifact in artifacts:
+                      protected_ids.add(artifact['id'])
+                      protected_reason[artifact['id']] = f'no verified successful survivor for {fam}'
+
+          candidates = []
+          for fam, artifacts in groups.items():
+              for artifact in artifacts:
+                  if artifact['id'] in protected_ids:
+                      continue
+                  run = get_run(artifact['workflow_run']['id'])
+                  if run.get('status') != 'completed':
+                      protected_ids.add(artifact['id'])
+                      protected_reason[artifact['id']] = 'run not completed; preserve'
+                      continue
+                  conclusion = run.get('conclusion') or 'unknown'
+                  reason = ('superseded successful artifact; newer successful survivor preserved'
+                            if conclusion == 'success'
+                            else f'obsolete artifact from completed {conclusion} run; successful survivor preserved')
+                  candidates.append((artifact, fam, reason))
+
+          deleted = []
+          errors = []
+          for artifact, fam, reason in sorted(candidates, key=lambda x: x[0].get('created_at') or ''):
+              if dry_run:
+                  continue
+              try:
+                  request(f'/repos/{repo}/actions/artifacts/{artifact["id"]}', method='DELETE')
+                  deleted.append((artifact, fam, reason))
+              except Exception as exc:
+                  errors.append((artifact, str(exc)))
+
+          after = inventory()
+          after_live = [a for a in after if not a.get('expired')]
+          after_expired = [a for a in after if a.get('expired')]
+          bytes_after = sum(a.get('size_in_bytes', 0) for a in after_live)
+          bytes_freed = max(0, bytes_before - bytes_after)
+
+          total_runs = request(f'/repos/{repo}/actions/runs?per_page=1').get('total_count', 0)
+          completed_runs = request(f'/repos/{repo}/actions/runs?status=completed&per_page=1').get('total_count', 0)
+          in_progress_runs = request(f'/repos/{repo}/actions/runs?status=in_progress&per_page=1').get('total_count', 0)
+          queued_runs = request(f'/repos/{repo}/actions/runs?status=queued&per_page=1').get('total_count', 0)
+          workflows = request(f'/repos/{repo}/actions/workflows?per_page=100')
+          active_workflows = sum(1 for w in workflows.get('workflows', []) if w.get('state') == 'active')
+          latest_completed = request(f'/repos/{repo}/actions/runs?status=completed&per_page=5').get('workflow_runs', [])
+          repo_meta = request(f'/repos/{repo}')
+          default_branch = repo_meta.get('default_branch', 'unknown')
+          default_ref = request(f'/repos/{repo}/branches/{urllib.parse.quote(default_branch, safe="")}')
+          default_sha = default_ref.get('commit', {}).get('sha', 'unknown')
+
+          active_lines = []
+          for run in active_runs:
+              jobs = request(f'/repos/{repo}/actions/runs/{run["id"]}/jobs?per_page=100').get('jobs', [])
+              if not jobs:
+                  active_lines.append(f'- `{run.get("name")}` | `{run.get("head_branch")}` | `{run.get("head_sha", "")[:12]}` | run `{run["id"]}` | no job started')
+                  continue
+              for job in jobs:
+                  steps = job.get('steps') or []
+                  completed_steps = sum(1 for s in steps if s.get('status') == 'completed')
+                  current = next((s.get('name') for s in steps if s.get('status') == 'in_progress'), 'waiting')
+                  active_lines.append(
+                      f'- `{run.get("name")}` | `{run.get("head_branch")}` | `{run.get("head_sha", "")[:12]}` | '
+                      f'run `{run["id"]}` | job `{job.get("name")}` | step `{current}` | '
+                      f'{completed_steps}/{len(steps)} steps'
+                  )
+
+          def family_stats(artifacts):
+              stats = collections.defaultdict(lambda: {'count': 0, 'bytes': 0, 'oldest': None, 'latest': None})
+              for a in artifacts:
+                  fam = family(a['name']) or f'unknown:{a["name"]}'
+                  s = stats[fam]
+                  s['count'] += 1
+                  s['bytes'] += a.get('size_in_bytes', 0)
+                  c = a.get('created_at')
+                  s['oldest'] = c if s['oldest'] is None or c < s['oldest'] else s['oldest']
+                  s['latest'] = c if s['latest'] is None or c > s['latest'] else s['latest']
+              return stats
+
+          stats_after = family_stats(after_live)
+          family_rows = sorted(stats_after.items(), key=lambda kv: kv[1]['bytes'], reverse=True)
+
+          after_by_id = {a['id']: a for a in after_live}
+          preserved_lines = []
+          for artifact in sorted(after_live, key=lambda a: a.get('size_in_bytes', 0), reverse=True):
+              reason = protected_reason.get(artifact['id'], 'preserved after verified cleanup')
+              preserved_lines.append(
+                  f'- `{artifact["id"]}` `{artifact["name"]}` — {artifact.get("size_in_bytes", 0)} bytes — {reason}'
+              )
+
+          deleted_lines = [
+              f'- `{a["id"]}` `{a["name"]}` — {a.get("size_in_bytes", 0)} bytes — {reason}'
+              for a, fam, reason in deleted
+          ]
+          error_lines = [f'- `{a["id"]}` `{a["name"]}` — {err}' for a, err in errors]
+
+          quota_state = 'CLEANUP_RECOMMENDED' if dry_run or errors or candidates and not deleted else 'NORMAL'
+          account_quota = 'UNKNOWN_ACCOUNT_CAPACITY'
+          now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+          run_url = f'https://github.com/{repo}/actions/runs/{os.environ.get("GITHUB_RUN_ID", "")}'
+          actions_url = f'https://github.com/{repo}/actions'
+          issue_url = f'https://github.com/{repo}/issues/{dashboard_issue}'
+
+          family_table = '\n'.join(
+              f'| `{fam}` | {s["count"]} | {mib(s["bytes"]):.2f} | {s["oldest"] or "—"} | {s["latest"] or "—"} |'
+              for fam, s in family_rows
+          ) or '| — | 0 | 0.00 | — | — |'
+
+          latest_lines = '\n'.join(
+              f'- `{r.get("name")}` run `{r["id"]}` — `{r.get("conclusion")}` — `{r.get("head_branch")}` — `{r.get("head_sha", "")[:12]}`'
+              for r in latest_completed
+          ) or '- None'
+
+          body = f'''# Artifact Storage Dashboard
+
+Updated UTC: {now}
+
+## Storage
+
+- Repository: `{repo}`
+- Default branch: `{default_branch}`
+- Default branch HEAD: `{default_sha}`
+- Total artifact records: **{len(after)}**
+- Live artifact count: **{len(after_live)}**
+- Live artifact bytes: **{bytes_after}**
+- Live artifact MiB: **{mib(bytes_after):.2f} MiB**
+- Expired artifacts: **{len(after_expired)}**
+- Expired artifact bytes: **{sum(a.get('size_in_bytes', 0) for a in after_expired)}**
+- Storage freed by last cleanup: **{bytes_freed} bytes ({mib(bytes_freed):.2f} MiB)**
+
+| Artifact family | Count | Live MiB | Oldest | Latest |
+|---|---:|---:|---|---|
+{family_table}
+
+## Workflow activity
+
+- Active workflows: **{active_workflows}**
+- Total workflow runs: **{total_runs}**
+- In progress: **{in_progress_runs}**
+- Queued: **{queued_runs}**
+- Completed: **{completed_runs}**
+
+Latest completed runs:
+{latest_lines}
+
+## Current active runs
+
+{os.linesep.join(active_lines) if active_lines else 'None.'}
+
+`completed steps / total steps` is Workflow execution progress only; it is not overall project completion percentage.
+
+## Cleanup
+
+- Last cleanup date: **{now}**
+- Cleanup run: [{os.environ.get('GITHUB_RUN_ID', 'unknown')}]({run_url})
+- Dry run: **{dry_run}**
+- Artifacts before: **{len(before_live)}**
+- Bytes before: **{bytes_before} ({mib(bytes_before):.2f} MiB)**
+- Artifacts deleted: **{len(deleted)}**
+- Bytes freed (independently verified): **{bytes_freed} ({mib(bytes_freed):.2f} MiB)**
+- Artifacts after: **{len(after_live)}**
+- Bytes after: **{bytes_after} ({mib(bytes_after):.2f} MiB)**
+- Cleanup errors: **{len(errors)}**
+
+### Preserved artifacts
+
+{os.linesep.join(preserved_lines) if preserved_lines else '- None'}
+
+### Deleted artifacts
+
+{os.linesep.join(deleted_lines) if deleted_lines else '- None'}
+
+### Cleanup errors
+
+{os.linesep.join(error_lines) if error_lines else '- None'}
+
+## Quota state
+
+- Repository-local state: **{quota_state}**
+- `REPOSITORY_LIVE_ARTIFACT_STORAGE`: **{mib(bytes_after):.2f} MiB**
+- `ACCOUNT_QUOTA_STATUS`: **{account_quota}**
+
+Repository-local Artifact API storage is not the same as owner/account billing quota accounting. No account capacity is guessed. If the GitHub billing UI remains quota-blocked after repository bytes fall substantially, classify that separately as `WAITING_FOR_GITHUB_RECALCULATION` until billing accounting refreshes.
+
+## Retention policy
+
+- routine `DevFix-<SHA>` package builds: keep latest successful via cleanup; recommended upload retention 14 days
+- Tunnel RC package builds: 14 days plus latest-successful preservation
+- UI previews: 14 days plus latest-successful preservation
+- release/deployment/audit/governance evidence: protected / project-specific
+- unknown artifact families: fail-safe preserve
+
+## Central dashboard integration
+
+- Local dashboard: {issue_url}
+- Actions page: {actions_url}
+- Cleanup workflow: `.github/workflows/actions-artifact-retention.yml`
+- Latest cleanup run: {run_url}
+- Central dashboard: **not configured**
+- Cross-repository updater requirement: fine-grained PAT or GitHub App token with Actions read, Metadata read, and Issues read/write only where dashboard updates are required. No token is stored in the repository.
+
+<!-- devfix-artifact-dashboard -->
+'''
+
+          title = f'Artifact Storage Dashboard — {mib(bytes_after):.2f} MiB live / {len(after_live)} artifacts'
+          request(f'/repos/{repo}/issues/{dashboard_issue}', method='PATCH', body={'title': title, 'body': body})
+
+          summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          if summary:
+              with open(summary, 'a', encoding='utf-8') as f:
+                  f.write('# Actions Artifact Retention\n\n')
+                  f.write(f'- ARTIFACTS_BEFORE: {len(before_live)}\n')
+                  f.write(f'- BYTES_BEFORE: {bytes_before} ({mib(bytes_before):.2f} MiB)\n')
+                  f.write(f'- ARTIFACTS_DELETED: {len(deleted)}\n')
+                  f.write(f'- BYTES_FREED: {bytes_freed} ({mib(bytes_freed):.2f} MiB)\n')
+                  f.write(f'- ARTIFACTS_AFTER: {len(after_live)}\n')
+                  f.write(f'- BYTES_AFTER: {bytes_after} ({mib(bytes_after):.2f} MiB)\n')
+                  f.write(f'- PRESERVED: {len(after_live)}\n')
+                  f.write(f'- CLEANUP_ERRORS: {len(errors)}\n')
+                  f.write(f'- ACCOUNT_QUOTA_STATUS: {account_quota}\n')
+                  f.write(f'- Dashboard: {issue_url}\n')
+
+          print(json.dumps({
+              'artifacts_before': len(before_live),
+              'bytes_before': bytes_before,
+              'artifacts_deleted': len(deleted),
+              'bytes_freed': bytes_freed,
+              'artifacts_after': len(after_live),
+              'bytes_after': bytes_after,
+              'errors': len(errors),
+              'dry_run': dry_run,
+          }, indent=2))
+
+          if errors:
+              raise SystemExit('Cleanup completed with deletion errors; dashboard contains details.')
+          PY
