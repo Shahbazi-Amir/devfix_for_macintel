@@ -80,3 +80,4 @@ jobs:
             dist/DevFix-*-macos-x86_64.tar.gz
             dist/SHA256SUMS
           if-no-files-found: error
+          retention-days: 14
