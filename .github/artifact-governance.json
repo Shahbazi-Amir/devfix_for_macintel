@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "repository": "Shahbazi-Amir/devfix_for_macintel",
+  "local_dashboard": {
+    "issue_number": 1,
+    "url": "https://github.com/Shahbazi-Amir/devfix_for_macintel/issues/1"
+  },
+  "cleanup": {
+    "workflow_path": ".github/workflows/actions-artifact-retention.yml",
+    "engine_path": ".github/scripts/artifact_cleanup.py",
+    "policy": "conservative-latest-successful-per-known-family",
+    "explicit_protected_artifact_ids": [9269052322, 9274817412],
+    "unknown_families": "preserve",
+    "active_or_queued_runs": "preserve",
+    "release_deployment_audit_governance": "preserve"
+  },
+  "storage_metrics": {
+    "repository_metric": "REPOSITORY_LIVE_ARTIFACT_STORAGE",
+    "account_quota_metric": "ACCOUNT_QUOTA_STATUS",
+    "account_capacity": "UNKNOWN_ACCOUNT_CAPACITY"
+  },
+  "central_dashboard": {
+    "status": "metadata_ready_not_connected",
+    "repository_url": null,
+    "required_cross_repository_auth": {
+      "recommended": "GitHub App or fine-grained PAT",
+      "permissions": [
+        "Metadata: read",
+        "Actions: read",
+        "Issues: read/write only where dashboard updates are required"
+      ]
+    }
+  },
+  "notes": [
+    "Do not treat repository-local artifact bytes as the owner's entire billing usage.",
+    "Scheduled workflows execute from the default branch; this integration remains staged until intentionally promoted.",
+    "No token or secret is stored in this file."
+  ]
+}
