@@ -257,8 +257,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func beginOperation(_ label: String) {
         operationInFlight = true
-        stateItem.title = "State: \(label)"
         renderStatus()
+        stateItem.title = "State: \(label)"
     }
 
     private func finishOperation(code: Int32, output: String, successMessage: String) {
@@ -279,7 +279,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func connectSystem() {
-        let script = "tell application \"Terminal\"\nactivate\ndo script \"/usr/local/bin/devfix-tunnel connect system; printf '\\\\nDevFix Tunnel command finished. You may close this window.\\\\n'\"\nend tell"
+        let script = "tell application \"Terminal\"\nactivate\ndo script \"/usr/local/bin/devfix-tunnel connect system\"\nend tell"
         CommandRunner.run("/usr/bin/osascript", ["-e", script]) { [weak self] code, output in
             if code != 0 {
                 self?.showAlert(title: "DevFix Tunnel", message: output)
@@ -347,7 +347,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func repair() {
-        let script = "tell application \"Terminal\"\nactivate\ndo script \"/usr/local/bin/devfix-tunnel repair; printf '\\\\nDevFix Tunnel repair finished. You may close this window.\\\\n'\"\nend tell"
+        let script = "tell application \"Terminal\"\nactivate\ndo script \"/usr/local/bin/devfix-tunnel repair\"\nend tell"
         CommandRunner.run("/usr/bin/osascript", ["-e", script]) { [weak self] _, _ in
             self?.refreshStatus()
         }
@@ -372,7 +372,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
+private let app = NSApplication.shared
+private let delegate = AppDelegate()
 app.delegate = delegate
 app.run()
