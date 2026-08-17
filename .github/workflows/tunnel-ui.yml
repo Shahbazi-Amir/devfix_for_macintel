@@ -1,0 +1,48 @@
+name: DevFix Tunnel UI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/devfix-tunnel-ui]
+    paths:
+      - "tunnel/ui/**"
+      - "tunnel/scripts/build-ui-app.sh"
+      - ".github/workflows/tunnel-ui.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-ui:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify locked controller boundary
+        run: |
+          test "$(cat tunnel/VERSION)" = "0.3.0-rc3"
+          grep -F 'TUNNEL_VERSION="0.3.0-rc3"' tunnel/cli/devfix-tunnel
+          git diff --exit-code 7c38237f2b60c8aeecf3b3193e56763c56e50d78 -- tunnel/cli tunnel/libexec tunnel/pkg tunnel/launchd tunnel/VERSION
+
+      - name: Build native menu bar app
+        run: bash tunnel/scripts/build-ui-app.sh
+
+      - name: Verify app bundle
+        run: |
+          APP="build/tunnel-ui/DevFix Tunnel.app"
+          ZIP="build/tunnel-ui/DevFixTunnel-0.3.0-rc3-ui-preview-macos-x86_64.zip"
+          test -x "$APP/Contents/MacOS/DevFixTunnelUI"
+          plutil -lint "$APP/Contents/Info.plist"
+          /usr/bin/file "$APP/Contents/MacOS/DevFixTunnelUI" | grep -F "x86_64"
+          codesign --verify --deep --strict "$APP"
+          test -s "$ZIP"
+          shasum -a 256 "$ZIP" | tee build/tunnel-ui/UI_SHA256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DevFixTunnel-0.3.0-rc3-ui-preview-macos-x86_64
+          path: |
+            build/tunnel-ui/DevFixTunnel-0.3.0-rc3-ui-preview-macos-x86_64.zip
+            build/tunnel-ui/UI_SHA256.txt
+          if-no-files-found: error
+          retention-days: 14
