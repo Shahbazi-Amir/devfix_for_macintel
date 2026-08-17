@@ -8,7 +8,7 @@ APP="$OUT_DIR/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 SOURCE="$ROOT/tunnel/ui/DevFixTunnelMenuBar.swift"
-ZIP="$OUT_DIR/DevFixTunnel-0.3.0-rc3-ui-preview-macos-x86_64.zip"
+ZIP="$OUT_DIR/DevFixTunnel-0.3.0-rc3-safari-preview-macos-x86_64.zip"
 
 command -v xcrun >/dev/null 2>&1 || { echo "xcrun is required to build the macOS UI" >&2; exit 1; }
 command -v codesign >/dev/null 2>&1 || { echo "codesign is required to build the macOS UI" >&2; exit 1; }
@@ -47,7 +47,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
   <key>CFBundleShortVersionString</key>
   <string>0.3.0</string>
   <key>CFBundleVersion</key>
-  <string>3</string>
+  <string>4</string>
   <key>LSMinimumSystemVersion</key>
   <string>12.0</string>
   <key>LSUIElement</key>
