@@ -3,7 +3,7 @@ name: DevFix Tunnel Package
 on:
   workflow_dispatch:
   push:
-    branches: [feature/devfix-tunnel]
+    branches: [feature/devfix-tunnel, feature/devfix-tunnel-smart-routing]
     paths: ["tunnel/**", "tests/test_devfix_tunnel_tor_config.sh", "TOR_BUNDLE_VERSION", ".github/workflows/tunnel-package.yml"]
 
 permissions:
@@ -46,14 +46,14 @@ jobs:
         run: |
           PKG=$(ls build/tunnel/DevFixTunnel-*-macos-x86_64.pkg)
           sudo installer -pkg "$PKG" -target /
-          /usr/local/bin/devfix-tunnel version | grep -F "0.3.0-rc3"
+          /usr/local/bin/devfix-tunnel version | grep -F "0.4.0-rc1"
           grep -F 'TUNNEL_TOR_CACHE_DIR="${DEVFIX_TUNNEL_CACHE_DIR:-$TUNNEL_STATE_ROOT/tor-cache}"' /usr/local/bin/devfix-tunnel
           grep -F 'CacheDirectory $q_cache' /usr/local/bin/devfix-tunnel
           grep -F 'AvoidDiskWrites 0' /usr/local/bin/devfix-tunnel
           grep -F 'STALL_TIMEOUT_DESCRIPTORS="${DEVFIX_TUNNEL_STALL_TIMEOUT_DESCRIPTORS:-900}"' /usr/local/bin/devfix-tunnel
           test -x /usr/local/bin/devfix-tunnel-chrome
           bash -n /usr/local/bin/devfix-tunnel-chrome
-          sudo /usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian version | grep -F "0.2.0-rc1"
+          sudo /usr/local/libexec/devfix-tunnel/devfix-tunnel-guardian version | grep -F "0.4.0-rc1"
           test -x /usr/local/libexec/devfix-tunnel/tor/tor
           test -x /usr/local/libexec/devfix-tunnel/tor/pluggable_transports/lyrebird
           test -f /usr/local/libexec/devfix-tunnel/tor/geoip
@@ -75,10 +75,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: DevFixTunnel-0.3.0-rc3-macos-x86_64
+          name: DevFixTunnel-0.4.0-rc1-macos-x86_64
           path: |
-            build/tunnel/DevFixTunnel-0.3.0-rc3-macos-x86_64.pkg
-            build/tunnel/DevFixTunnel-0.3.0-rc3-macos-x86_64.tar.gz
+            build/tunnel/DevFixTunnel-0.4.0-rc1-macos-x86_64.pkg
+            build/tunnel/DevFixTunnel-0.4.0-rc1-macos-x86_64.tar.gz
             build/tunnel/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
