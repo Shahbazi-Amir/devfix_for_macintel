@@ -2,6 +2,8 @@ name: DevFix Tunnel Package
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths: ["tunnel/**", "tests/test_devfix_tunnel_tor_config.sh", "TOR_BUNDLE_VERSION", ".github/workflows/tunnel-package.yml"]
   push:
     branches: [feature/devfix-tunnel, feature/devfix-tunnel-smart-routing]
     paths: ["tunnel/**", "tests/test_devfix_tunnel_tor_config.sh", "TOR_BUNDLE_VERSION", ".github/workflows/tunnel-package.yml"]
