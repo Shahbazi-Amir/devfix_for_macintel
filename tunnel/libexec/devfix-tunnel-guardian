@@ -160,7 +160,9 @@ apply_owned_proxy() {
   service="$1"; port="$2"
   ns_set -setsocksfirewallproxy "$service" 127.0.0.1 "$port" off >/dev/null || return 1
   ns_set -setsocksfirewallproxystate "$service" on >/dev/null || return 1
-  ns_set -setproxybypassdomains "$service" $SMART_BYPASS_DOMAINS >/dev/null || return 1
+  bypass_args=()
+  for domain in $SMART_BYPASS_DOMAINS; do bypass_args+=("$domain"); done
+  ns_set -setproxybypassdomains "$service" "${bypass_args[@]}" >/dev/null || return 1
   proxy_matches_owned "$service" "$port"
 }
 restore_snapshot() {
@@ -190,7 +192,11 @@ restore_snapshot() {
   esac
 
   if [ -n "$previous_bypass" ]; then
-    ns_set -setproxybypassdomains "$service" $previous_bypass >/dev/null || return 1
+    bypass_args=()
+    while IFS= read -r domain; do [ -n "$domain" ] && bypass_args+=("$domain"); done <<EOF
+$previous_bypass
+EOF
+    ns_set -setproxybypassdomains "$service" "${bypass_args[@]}" >/dev/null || return 1
   else
     ns_set -setproxybypassdomains "$service" Empty >/dev/null || return 1
   fi
@@ -294,7 +300,6 @@ guardian_monitor() {
   user_state="$5"
   uid="$6"
   gid="$7"
-  original_service="$service"
   original_fingerprint=$(network_fingerprint 2>/dev/null || true)
   [ -n "$original_fingerprint" ] || original_fingerprint="unknown||$service"
   network_mismatch_count=0
