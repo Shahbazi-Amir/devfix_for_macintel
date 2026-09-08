@@ -158,10 +158,10 @@ bypass_matches_owned() { [ "$(current_bypass "$1")" = "$(expected_bypass)" ]; }
 proxy_matches_owned() { service="$1"; port="$2"; data=$(current_socks "$service") || return 1; enabled=$(proxy_field "$data" Enabled); server=$(proxy_field "$data" Server); current_port=$(proxy_field "$data" Port); [ "$enabled" = "Yes" ] && { [ "$server" = "127.0.0.1" ] || [ "$server" = "localhost" ]; } && [ "$current_port" = "$port" ] && bypass_matches_owned "$service"; }
 apply_owned_proxy() {
   service="$1"; port="$2"
-  ns_set -setsocksfirewallproxy "$service" 127.0.0.1 "$port" off >/dev/null || return 1
-  ns_set -setsocksfirewallproxystate "$service" on >/dev/null || return 1
   bypass_args=()
   for domain in $SMART_BYPASS_DOMAINS; do bypass_args+=("$domain"); done
+  ns_set -setsocksfirewallproxy "$service" 127.0.0.1 "$port" off >/dev/null || return 1
+  ns_set -setsocksfirewallproxystate "$service" on >/dev/null || return 1
   ns_set -setproxybypassdomains "$service" "${bypass_args[@]}" >/dev/null || return 1
   proxy_matches_owned "$service" "$port"
 }
