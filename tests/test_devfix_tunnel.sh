@@ -86,9 +86,8 @@ export DEVFIX_TUNNEL_TEST_MODE=1 DEVFIX_TUNNEL_TOR_BIN="$FAKE_TOR" DEVFIX_TUNNEL
 
 new_case() { CASE="$TMP/$1"; mkdir -p "$CASE"; export DEVFIX_TUNNEL_STATE_DIR="$CASE/user-state" DEVFIX_TUNNEL_LOG_DIR="$CASE/user-logs" DEVFIX_TUNNEL_SYSTEM_STATE_DIR="$CASE/system-state" FAKE_PROXY_STATE_FILE="$CASE/proxy.state" FAKE_PROXY_BYPASS_FILE="$CASE/proxy.bypass" FAKE_ROUTE_IFACE_FILE="$CASE/route.iface" FAKE_ROUTE_GATEWAY_FILE="$CASE/route.gateway"; unset FAKE_WEB_ENABLED FAKE_SECURE_ENABLED FAKE_AUTO_ENABLED FAKE_DISCOVERY_ENABLED FAKE_SOCKS_AUTH_ENABLED || true; printf 'ENABLED=No\nSERVER=old.invalid\nPORT=1080\n' > "$FAKE_PROXY_STATE_FILE"; printf 'en0\n' > "$FAKE_ROUTE_IFACE_FILE"; printf '192.0.2.1\n' > "$FAKE_ROUTE_GATEWAY_FILE"; printf 'old.internal\n' > "$FAKE_PROXY_BYPASS_FILE"; }
 wait_for() { timeout="$1"; shift; i=0; while [ "$i" -lt "$timeout" ]; do if "$@"; then return 0; fi; /bin/sleep 0.1; i=$((i + 1)); done; return 1; }
-proxy_is_enabled_owned() { grep -q '^ENABLED=Yes
-proxy_is_restored() { grep -q '^ENABLED=No
-
+proxy_is_enabled_owned() { grep -q '^ENABLED=Yes$' "$FAKE_PROXY_STATE_FILE" && grep -q '^SERVER=127.0.0.1$' "$FAKE_PROXY_STATE_FILE" && grep -q '^PORT=29150$' "$FAKE_PROXY_STATE_FILE" && grep -Fxq '*.ir' "$FAKE_PROXY_BYPASS_FILE" && grep -Fxq '10.0.0.0/8' "$FAKE_PROXY_BYPASS_FILE"; }
+proxy_is_restored() { grep -q '^ENABLED=No$' "$FAKE_PROXY_STATE_FILE" && grep -q '^SERVER=old.invalid$' "$FAKE_PROXY_STATE_FILE" && grep -q '^PORT=1080$' "$FAKE_PROXY_STATE_FILE" && [ "$(cat "$FAKE_PROXY_BYPASS_FILE")" = "old.internal" ]; }
 new_case system_success
 "$TUNNEL" connect system > "$CASE/connect.out" 2>&1 || { cat "$CASE/connect.out" >&2; fail "system connect"; }
 grep -q 'Connected with DevFix Tunnel System Proxy' "$CASE/connect.out" || fail "system success contract"
