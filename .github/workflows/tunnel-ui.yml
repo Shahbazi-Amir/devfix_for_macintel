@@ -2,6 +2,11 @@ name: DevFix Tunnel UI
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "tunnel/ui/**"
+      - "tunnel/scripts/build-ui-app.sh"
+      - ".github/workflows/tunnel-ui.yml"
   push:
     branches: [feature/devfix-tunnel-ui, feature/devfix-tunnel-smart-routing]
     paths:
