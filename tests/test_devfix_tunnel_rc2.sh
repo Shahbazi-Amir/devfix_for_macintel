@@ -76,7 +76,7 @@ export DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT=5
 export DEVFIX_TUNNEL_SOCKS_PORT=29250
 unset DEVFIX_TUNNEL_MAX_AUTO_ATTEMPTS || true
 
-"$TUNNEL" version | grep -Eq '0\.3\.0-rc(2|3)' || fail 'RC2-or-later version missing'
+"$TUNNEL" version | grep -Eq '(0\.3\.0-rc(2|3)|0\.4\.0-rc1)' || fail 'RC2-or-later version missing'
 
 "$TUNNEL" connect socks --transport auto --foreign-only > "$TMP/connect.out" 2>&1 || {
   cat "$TMP/connect.out" >&2

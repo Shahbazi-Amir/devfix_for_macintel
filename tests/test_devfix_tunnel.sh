@@ -12,7 +12,7 @@ pass() { printf 'PASS: %s\n' "$*"; }
 
 bash -n "$TUNNEL" || fail "tunnel syntax"
 bash -n "$GUARDIAN" || fail "guardian syntax"
-"$TUNNEL" version | grep -q '0.3.0-rc3' || fail "version"
+"$TUNNEL" version | grep -q '0.4.0-rc1' || fail "version"
 "$TUNNEL" help | grep -q 'System Proxy' || fail "help"
 pass "syntax and basic CLI"
 
@@ -37,16 +37,18 @@ EOF
 cat > "$FAKE_ROUTE" <<'EOF'
 #!/bin/bash
 iface=$(cat "$FAKE_ROUTE_IFACE_FILE")
+gateway=$(cat "$FAKE_ROUTE_GATEWAY_FILE")
 cat <<EOT
    route to: default
 destination: default
+    gateway: $gateway
   interface: $iface
 EOT
 EOF
 cat > "$FAKE_NETWORKSETUP" <<'EOF'
 #!/bin/bash
 set -eu
-state="$FAKE_PROXY_STATE_FILE"; web="${FAKE_WEB_ENABLED:-No}"; secure="${FAKE_SECURE_ENABLED:-No}"; auto="${FAKE_AUTO_ENABLED:-No}"; discovery="${FAKE_DISCOVERY_ENABLED:-Off}"
+state="$FAKE_PROXY_STATE_FILE"; bypass="${FAKE_PROXY_BYPASS_FILE:-$state.bypass}"; web="${FAKE_WEB_ENABLED:-No}"; secure="${FAKE_SECURE_ENABLED:-No}"; auto="${FAKE_AUTO_ENABLED:-No}"; discovery="${FAKE_DISCOVERY_ENABLED:-Off}"
 read_state() { SOCKS_ENABLED=$(sed -n 's/^ENABLED=//p' "$state"); SOCKS_SERVER=$(sed -n 's/^SERVER=//p' "$state"); SOCKS_PORT=$(sed -n 's/^PORT=//p' "$state"); }
 write_state() { printf 'ENABLED=%s\nSERVER=%s\nPORT=%s\n' "$SOCKS_ENABLED" "$SOCKS_SERVER" "$SOCKS_PORT" > "$state"; }
 cmd="${1:-}"; shift || true
@@ -58,7 +60,8 @@ case "$cmd" in
 -getsecurewebproxy) printf 'Enabled: %s\nServer: \nPort: 0\nAuthenticated Proxy Enabled: 0\n' "$secure" ;;
 -getautoproxyurl) printf 'URL: (null)\nEnabled: %s\n' "$auto" ;;
 -getproxyautodiscovery) printf 'Auto Proxy Discovery: %s\n' "$discovery" ;;
--getproxybypassdomains) printf '%s\n' "There aren't any bypass domains set on Wi-Fi." ;;
+-getproxybypassdomains) if [ -s "$bypass" ]; then cat "$bypass"; else printf '%s\n' "There aren't any bypass domains set on Wi-Fi."; fi ;;
+-setproxybypassdomains) service="$1"; shift; case "$service" in 'Wi-Fi'|'Ethernet') ;; *) exit 1 ;; esac; : > "$bypass"; if [ "${1:-}" != "Empty" ]; then for domain in "$@"; do printf '%s\n' "$domain" >> "$bypass"; done; fi ;;
 -setsocksfirewallproxy) service="$1"; server="$2"; port="$3"; case "$service" in 'Wi-Fi'|'Ethernet') ;; *) exit 1 ;; esac; read_state; SOCKS_ENABLED=Yes; SOCKS_SERVER="$server"; SOCKS_PORT="$port"; write_state ;;
 -setsocksfirewallproxystate) service="$1"; desired="$2"; case "$service" in 'Wi-Fi'|'Ethernet') ;; *) exit 1 ;; esac; read_state; case "$desired" in on|On|ON) SOCKS_ENABLED=Yes ;; *) SOCKS_ENABLED=No ;; esac; write_state ;;
 *) printf 'unexpected networksetup command: %s %s\n' "$cmd" "$*" >&2; exit 2 ;;
@@ -81,10 +84,10 @@ printf '%s\n' '::/0,de' > "$FAKE_GEOIP6"
 
 export DEVFIX_TUNNEL_TEST_MODE=1 DEVFIX_TUNNEL_TOR_BIN="$FAKE_TOR" DEVFIX_TUNNEL_LYREBIRD_BIN="$FAKE_LYREBIRD" DEVFIX_TUNNEL_GUARDIAN_BIN="$GUARDIAN" DEVFIX_TUNNEL_NETWORKSETUP_BIN="$FAKE_NETWORKSETUP" DEVFIX_TUNNEL_ROUTE_BIN="$FAKE_ROUTE" DEVFIX_TUNNEL_SLEEP_BIN="$FAKE_SLEEP" DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT=5 DEVFIX_TUNNEL_STALL_TIMEOUT=3 DEVFIX_TUNNEL_GUARDIAN_START_TIMEOUT=5 DEVFIX_TUNNEL_GUARDIAN_STOP_TIMEOUT=5 DEVFIX_TUNNEL_SOCKS_PORT=29150 DEVFIX_TUNNEL_TRANSPORT_CATALOG="$FAKE_CATALOG" DEVFIX_TUNNEL_GEOIP="$FAKE_GEOIP" DEVFIX_TUNNEL_GEOIP6="$FAKE_GEOIP6" DEVFIX_TUNNEL_MAX_AUTO_ATTEMPTS=4
 
-new_case() { CASE="$TMP/$1"; mkdir -p "$CASE"; export DEVFIX_TUNNEL_STATE_DIR="$CASE/user-state" DEVFIX_TUNNEL_LOG_DIR="$CASE/user-logs" DEVFIX_TUNNEL_SYSTEM_STATE_DIR="$CASE/system-state" FAKE_PROXY_STATE_FILE="$CASE/proxy.state" FAKE_ROUTE_IFACE_FILE="$CASE/route.iface"; unset FAKE_WEB_ENABLED FAKE_SECURE_ENABLED FAKE_AUTO_ENABLED FAKE_DISCOVERY_ENABLED FAKE_SOCKS_AUTH_ENABLED || true; printf 'ENABLED=No\nSERVER=old.invalid\nPORT=1080\n' > "$FAKE_PROXY_STATE_FILE"; printf 'en0\n' > "$FAKE_ROUTE_IFACE_FILE"; }
+new_case() { CASE="$TMP/$1"; mkdir -p "$CASE"; export DEVFIX_TUNNEL_STATE_DIR="$CASE/user-state" DEVFIX_TUNNEL_LOG_DIR="$CASE/user-logs" DEVFIX_TUNNEL_SYSTEM_STATE_DIR="$CASE/system-state" FAKE_PROXY_STATE_FILE="$CASE/proxy.state" FAKE_PROXY_BYPASS_FILE="$CASE/proxy.bypass" FAKE_ROUTE_IFACE_FILE="$CASE/route.iface" FAKE_ROUTE_GATEWAY_FILE="$CASE/route.gateway"; unset FAKE_WEB_ENABLED FAKE_SECURE_ENABLED FAKE_AUTO_ENABLED FAKE_DISCOVERY_ENABLED FAKE_SOCKS_AUTH_ENABLED || true; printf 'ENABLED=No\nSERVER=old.invalid\nPORT=1080\n' > "$FAKE_PROXY_STATE_FILE"; printf 'en0\n' > "$FAKE_ROUTE_IFACE_FILE"; printf '192.0.2.1\n' > "$FAKE_ROUTE_GATEWAY_FILE"; printf 'old.internal\n' > "$FAKE_PROXY_BYPASS_FILE"; }
 wait_for() { timeout="$1"; shift; i=0; while [ "$i" -lt "$timeout" ]; do if "$@"; then return 0; fi; /bin/sleep 0.1; i=$((i + 1)); done; return 1; }
-proxy_is_enabled_owned() { grep -q '^ENABLED=Yes$' "$FAKE_PROXY_STATE_FILE" && grep -q '^SERVER=127.0.0.1$' "$FAKE_PROXY_STATE_FILE" && grep -q '^PORT=29150$' "$FAKE_PROXY_STATE_FILE"; }
-proxy_is_restored() { grep -q '^ENABLED=No$' "$FAKE_PROXY_STATE_FILE" && grep -q '^SERVER=old.invalid$' "$FAKE_PROXY_STATE_FILE" && grep -q '^PORT=1080$' "$FAKE_PROXY_STATE_FILE"; }
+proxy_is_enabled_owned() { grep -q '^ENABLED=Yes$' "$FAKE_PROXY_STATE_FILE" && grep -q '^SERVER=127.0.0.1$' "$FAKE_PROXY_STATE_FILE" && grep -q '^PORT=29150$' "$FAKE_PROXY_STATE_FILE" && grep -Fxq '*.ir' "$FAKE_PROXY_BYPASS_FILE" && grep -Fxq '10.0.0.0/8' "$FAKE_PROXY_BYPASS_FILE"; }
+proxy_is_restored() { grep -q '^ENABLED=No$' "$FAKE_PROXY_STATE_FILE" && grep -q '^SERVER=old.invalid$' "$FAKE_PROXY_STATE_FILE" && grep -q '^PORT=1080$' "$FAKE_PROXY_STATE_FILE" && [ "$(cat "$FAKE_PROXY_BYPASS_FILE")" = "old.internal" ]; }
 
 new_case system_success
 "$TUNNEL" connect system > "$CASE/connect.out" 2>&1 || { cat "$CASE/connect.out" >&2; fail "system connect"; }
@@ -119,6 +122,9 @@ new_case external_change
 
 new_case network_change
 "$TUNNEL" connect system > "$CASE/connect.out" 2>&1 || fail "network change connect"; printf 'en1\n' > "$FAKE_ROUTE_IFACE_FILE"; wait_for 50 proxy_is_restored || fail "network change did not restore old proxy"; wait_for 50 test -f "$DEVFIX_TUNNEL_STATE_DIR/run/system-proxy.failed" || fail "network-change marker missing"; grep -q 'NETWORK_SERVICE_CHANGED' "$DEVFIX_TUNNEL_STATE_DIR/run/system-proxy.failed" || fail "network-change classification"; tor_pid=$(sed -n 's/^PID=//p' "$DEVFIX_TUNNEL_STATE_DIR/run/state"); kill "$tor_pid" 2>/dev/null || true; rm -f "$DEVFIX_TUNNEL_STATE_DIR/run/state" "$DEVFIX_TUNNEL_STATE_DIR/run/tor.pid" "$DEVFIX_TUNNEL_STATE_DIR/run/torrc" || true; pass "network service change recovery"
+
+new_case same_service_network_change
+"$TUNNEL" connect system > "$CASE/connect.out" 2>&1 || fail "same-service network change connect"; printf '198.51.100.1\n' > "$FAKE_ROUTE_GATEWAY_FILE"; wait_for 80 proxy_is_restored || fail "same-service gateway change did not restore old proxy"; wait_for 50 test -f "$DEVFIX_TUNNEL_STATE_DIR/run/system-proxy.failed" || fail "same-service network marker missing"; grep -q 'NETWORK_SERVICE_CHANGED' "$DEVFIX_TUNNEL_STATE_DIR/run/system-proxy.failed" || fail "same-service network classification"; tor_pid=$(sed -n 's/^PID=//p' "$DEVFIX_TUNNEL_STATE_DIR/run/state"); kill "$tor_pid" 2>/dev/null || true; rm -f "$DEVFIX_TUNNEL_STATE_DIR/run/state" "$DEVFIX_TUNNEL_STATE_DIR/run/tor.pid" "$DEVFIX_TUNNEL_STATE_DIR/run/torrc" || true; pass "same service gateway change recovery"
 
 new_case idempotent_system
 "$TUNNEL" connect system > "$CASE/connect1.out" 2>&1 || fail "idempotent system first connect"
