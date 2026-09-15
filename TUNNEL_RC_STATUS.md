@@ -158,3 +158,28 @@ Do not promote the product to stable `0.3.0` until the remaining physical accept
 4. final review of the transient Tor Check SSL reliability observation.
 
 UI work must be isolated from this RC3 core on a separate branch and must call the validated controller rather than duplicating Tor/guardian logic.
+
+## 0.4.0-rc1 smart-routing work — 2026-09-08
+
+Development branch: `feature/devfix-tunnel-smart-routing`
+
+Base: `feature/devfix-tunnel-ui` at `2c59e05fca61e0d6ece913867e3252dff0547a61`.
+
+This RC preserves the validated RC3 transport/fallback logic and changes the System Proxy layer:
+
+- Safari, Chrome, and other proxy-aware macOS applications use the Tor SOCKS route.
+- `*.ir`, `ir`, localhost, `*.local`, link-local, and RFC1918 private-network destinations bypass the proxy and remain direct.
+- the guardian now owns the bypass-domain signature as well as the SOCKS endpoint;
+- the pre-session bypass list is restored during disconnect and recovery;
+- network change detection uses interface + default gateway + network service, covering Wi-Fi-to-Hotspot changes where the service name remains `Wi-Fi`;
+- three consecutive path mismatches are required before fail-open restoration.
+
+This remains an RC. Stable promotion is blocked until exact-artifact physical Intel Monterey acceptance closes:
+
+1. Safari and Chrome filtered-site access;
+2. direct `.ir` and local/private destination access;
+3. connected Wi-Fi-to-Hotspot recovery;
+4. reboot/orphan recovery;
+5. disconnect restoration of both SOCKS and the previous bypass list.
+
+The prior `0.3.0-rc3` artifact and `main` remain unchanged.

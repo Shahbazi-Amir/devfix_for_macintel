@@ -4,7 +4,7 @@
 
 set -u
 
-TUNNEL_VERSION="0.3.0-rc3"
+TUNNEL_VERSION="0.4.0-rc1"
 TUNNEL_NAME="DevFix Tunnel"
 TUNNEL_TEST_MODE="${DEVFIX_TUNNEL_TEST_MODE:-0}"
 
@@ -473,7 +473,7 @@ start_system_proxy_guardian() {
       write_state CONNECTED SYSTEM_PROXY "$pid" "$port" "$session" "$started" "$service" "$transport" "$candidate" "$requested_transport" "$exit_policy" "$exit_country" "$data_dir" "$attempt_log"
       log_line "session=$session state=CONNECTED mode=SYSTEM_PROXY service=$service transport=$transport candidate=$candidate"
       info "System Proxy enabled safely for network service: $service"
-      info "Proxy-aware macOS apps can now use the validated Tor route."
+      info "Smart routing active: .ir and local-network destinations stay direct; other proxy-aware browser traffic uses Tor."
       return 0
     fi
     if [ -f "$TUNNEL_PROXY_FAILED" ]; then
@@ -578,6 +578,7 @@ cmd_status() {
   [ -n "$exit_policy" ] && printf 'Exit policy: %s\n' "$exit_policy"
   [ -n "$exit_country" ] && printf 'Preferred exit country: %s\n' "$exit_country"
   [ -n "$service" ] && printf 'System Proxy service: %s\n' "$service"
+  [ "$mode" = "SYSTEM_PROXY" ] && printf 'Routing: SMART_IR_DIRECT (Iran .ir + local/private direct; other proxy-aware traffic via Tor)\n'
   if [ -n "$pid" ]; then
     if pid_is_owned "$pid"; then printf 'Tor PID: %s (owned/alive)\n' "$pid"
     elif is_pid_alive "$pid"; then printf 'Tor PID: %s (alive, ownership NOT proven)\n' "$pid"
@@ -771,8 +772,9 @@ Connect options:
   --service "Network Service" Override active macOS network service
 
 Modes:
-  system  Validated Tor route + safe macOS System SOCKS Proxy. Targets Safari,
-          Chrome, VS Code/Electron and other apps that honor System Proxy.
+  system  Validated Tor route + safe macOS System SOCKS Proxy. Safari, Chrome
+          and other proxy-aware apps use Tor, while .ir and local/private
+          destinations bypass the proxy and stay direct.
   socks   Validated local SOCKS only. No macOS network settings are changed.
 
 Transport policy:
@@ -783,6 +785,7 @@ Safety:
   - System Proxy is never enabled before Tor bootstrap 100% + HTTPS validation.
   - DevFix and DevFix Tunnel use separate runtime/state paths.
   - Existing third-party proxy/PAC settings cause a fail-closed stop.
+  - Existing proxy-bypass settings are snapshotted and restored exactly.
   - Proxy changes are owned by a root guardian with snapshot/restore.
   - External proxy changes are never blindly overwritten.
   - This edition is not a packet-level full-device VPN.

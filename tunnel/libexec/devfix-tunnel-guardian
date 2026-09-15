@@ -4,7 +4,7 @@
 
 set -u
 
-GUARDIAN_VERSION="0.2.0-rc1"
+GUARDIAN_VERSION="0.4.0-rc1"
 TEST_MODE="${DEVFIX_TUNNEL_TEST_MODE:-0}"
 SYSTEM_STATE_DIR="${DEVFIX_TUNNEL_SYSTEM_STATE_DIR:-/Library/Application Support/DevFixTunnel}"
 NETWORKSETUP_BIN="${DEVFIX_TUNNEL_NETWORKSETUP_BIN:-/usr/sbin/networksetup}"
@@ -13,6 +13,7 @@ SLEEP_BIN="${DEVFIX_TUNNEL_SLEEP_BIN:-/bin/sleep}"
 USER_SUDO_BIN="${DEVFIX_TUNNEL_USER_SUDO_BIN:-/usr/bin/sudo}"
 CURRENT_FILE="$SYSTEM_STATE_DIR/current"
 GUARDIAN_LOG="$SYSTEM_STATE_DIR/guardian.log"
+SMART_BYPASS_DOMAINS="${DEVFIX_TUNNEL_SMART_BYPASS_DOMAINS:-*.ir ir localhost 127.0.0.1 *.local 169.254/16 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16}"
 
 now_utc() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 die() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -107,6 +108,15 @@ write_owner() { session="$1"; phase="$2"; service="$3"; port="$4"; user_state="$
 ns_read() { "$NETWORKSETUP_BIN" "$@" 2>/dev/null; }
 ns_set() { "$NETWORKSETUP_BIN" "$@"; }
 route_interface() { "$ROUTE_BIN" -n get default 2>/dev/null | awk '/interface:/{print $2; exit}'; }
+route_gateway() { "$ROUTE_BIN" -n get default 2>/dev/null | awk '/gateway:/{print $2; exit}'; }
+network_fingerprint() {
+  iface=$(route_interface)
+  [ -n "$iface" ] || return 1
+  service=$(service_for_interface "$iface")
+  [ -n "$service" ] || return 1
+  gateway=$(route_gateway)
+  printf '%s|%s|%s' "$iface" "$gateway" "$service"
+}
 service_for_interface() { wanted="$1"; ns_read -listnetworkserviceorder | awk -v wanted="$wanted" '/^\([0-9]+\)/ {name=$0; sub(/^\([0-9]+\)[[:space:]]*/, "", name); sub(/^\*/, "", name); next} /Device:/ {line=$0; sub(/^.*Device:[[:space:]]*/, "", line); sub(/\).*$/, "", line); if (line == wanted && name != "") {print name; exit}}'; }
 discover_service() { explicit="${1:-}"; if [ -n "$explicit" ]; then ns_read -getinfo "$explicit" >/dev/null 2>&1 || return 1; printf '%s' "$explicit"; return 0; fi; iface=$(route_interface); [ -n "$iface" ] || return 1; service_for_interface "$iface"; }
 proxy_field() { data="$1"; field="$2"; printf '%s\n' "$data" | awk -F': ' -v field="$field" '$1 == field {sub($1 FS, ""); print; exit}'; }
@@ -137,8 +147,24 @@ snapshot_conflict_reason() {
 }
 
 current_socks() { ns_read -getsocksfirewallproxy "$1"; }
-proxy_matches_owned() { service="$1"; port="$2"; data=$(current_socks "$service") || return 1; enabled=$(proxy_field "$data" Enabled); server=$(proxy_field "$data" Server); current_port=$(proxy_field "$data" Port); [ "$enabled" = "Yes" ] && { [ "$server" = "127.0.0.1" ] || [ "$server" = "localhost" ]; } && [ "$current_port" = "$port" ]; }
-apply_owned_proxy() { service="$1"; port="$2"; ns_set -setsocksfirewallproxy "$service" 127.0.0.1 "$port" off >/dev/null; ns_set -setsocksfirewallproxystate "$service" on >/dev/null; proxy_matches_owned "$service" "$port"; }
+normalized_bypass() {
+  printf '%s\n' "$1" | sed -e '/^[[:space:]]*$/d' -e "/There aren't any bypass domains/d" -e '/^Empty$/d' | LC_ALL=C sort -u
+}
+expected_bypass() {
+  for domain in $SMART_BYPASS_DOMAINS; do printf '%s\n' "$domain"; done | LC_ALL=C sort -u
+}
+current_bypass() { normalized_bypass "$(ns_read -getproxybypassdomains "$1" 2>/dev/null || true)"; }
+bypass_matches_owned() { [ "$(current_bypass "$1")" = "$(expected_bypass)" ]; }
+proxy_matches_owned() { service="$1"; port="$2"; data=$(current_socks "$service") || return 1; enabled=$(proxy_field "$data" Enabled); server=$(proxy_field "$data" Server); current_port=$(proxy_field "$data" Port); [ "$enabled" = "Yes" ] && { [ "$server" = "127.0.0.1" ] || [ "$server" = "localhost" ]; } && [ "$current_port" = "$port" ] && bypass_matches_owned "$service"; }
+apply_owned_proxy() {
+  service="$1"; port="$2"
+  bypass_args=()
+  for domain in $SMART_BYPASS_DOMAINS; do bypass_args+=("$domain"); done
+  ns_set -setsocksfirewallproxy "$service" 127.0.0.1 "$port" off >/dev/null || return 1
+  ns_set -setsocksfirewallproxystate "$service" on >/dev/null || return 1
+  ns_set -setproxybypassdomains "$service" "${bypass_args[@]}" >/dev/null || return 1
+  proxy_matches_owned "$service" "$port"
+}
 restore_snapshot() {
   service="$1"
   snapshot="$2"
@@ -147,6 +173,7 @@ restore_snapshot() {
   previous_server=$(proxy_field "$previous" Server)
   previous_port=$(proxy_field "$previous" Port)
   previous_auth=$(proxy_field "$previous" "Authenticated Proxy Enabled")
+  previous_bypass=$(normalized_bypass "$(cat "$snapshot/bypass" 2>/dev/null || true)")
 
   case "$previous_auth" in
     1|Yes|YES|yes|On|ON|on) return 1 ;;
@@ -163,6 +190,16 @@ restore_snapshot() {
     Yes) ns_set -setsocksfirewallproxystate "$service" on >/dev/null || return 1 ;;
     *) ns_set -setsocksfirewallproxystate "$service" off >/dev/null || return 1 ;;
   esac
+
+  if [ -n "$previous_bypass" ]; then
+    bypass_args=()
+    while IFS= read -r domain; do [ -n "$domain" ] && bypass_args+=("$domain"); done <<EOF
+$previous_bypass
+EOF
+    ns_set -setproxybypassdomains "$service" "${bypass_args[@]}" >/dev/null || return 1
+  else
+    ns_set -setproxybypassdomains "$service" Empty >/dev/null || return 1
+  fi
 
   after=$(current_socks "$service") || return 1
   after_enabled=$(proxy_field "$after" Enabled)
@@ -263,7 +300,9 @@ guardian_monitor() {
   user_state="$5"
   uid="$6"
   gid="$7"
-  original_service="$service"
+  original_fingerprint=$(network_fingerprint 2>/dev/null || true)
+  [ -n "$original_fingerprint" ] || original_fingerprint="unknown||$service"
+  network_mismatch_count=0
 
   while :; do
     if safe_user_marker_exists "$user_state" "system-proxy.stop" "$uid" "$gid"; then
@@ -288,10 +327,18 @@ REASON=PROXY_OWNERSHIP_LOST" "$uid" "$gid" || true
       return 3
     fi
 
-    active=$(discover_service '' 2>/dev/null || true)
-    if [ -n "$active" ] && [ "$active" != "$original_service" ]; then
+    active_fingerprint=$(network_fingerprint 2>/dev/null || true)
+    if [ -z "$active_fingerprint" ] || [ "$active_fingerprint" != "$original_fingerprint" ]; then
+      network_mismatch_count=$((network_mismatch_count + 1))
+    else
+      network_mismatch_count=0
+    fi
+    if [ "$network_mismatch_count" -ge 3 ]; then
       safe_user_marker "$user_state" "system-proxy.failed" "SESSION=$session
-REASON=NETWORK_SERVICE_CHANGED" "$uid" "$gid" || true
+REASON=NETWORK_SERVICE_CHANGED
+OLD_PATH=$original_fingerprint
+NEW_PATH=${active_fingerprint:-unavailable}" "$uid" "$gid" || true
+      log_line "session=$session network_change old=$original_fingerprint new=${active_fingerprint:-unavailable}"
       recover_owned_proxy "$session" "$user_state" "$uid" "$gid"
       return $?
     fi

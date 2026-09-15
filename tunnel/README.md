@@ -2,7 +2,7 @@
 
 DevFix Tunnel is the independent macOS censorship-circumvention product built from the proven DevFix Tor/bridge foundation while keeping stable DevFix separate.
 
-Current release candidate: `0.3.0-rc3`.
+Current release candidate: `0.4.0-rc1` (smart browser routing), based on the physically validated `0.3.0-rc3` transport core.
 
 Primary target: Intel x86_64 Mac / macOS Monterey 12.x.
 
@@ -110,7 +110,7 @@ devfix-tunnel connect --allow-any-exit
 devfix-tunnel connect system
 ```
 
-safely applies the validated local SOCKS route to the active macOS System Proxy service. This is intended for Safari, Chrome, VS Code/Electron, and other applications that honor macOS proxy settings.
+safely applies the validated local SOCKS route to the active macOS System Proxy service. Safari, Chrome, and other applications that honor macOS proxy settings use Tor, while `.ir`, localhost, `.local`, link-local, and private RFC1918 destinations bypass the proxy and remain direct. The guardian owns and restores both the SOCKS proxy and the prior bypass-domain list.
 
 ### Selective Chrome — one tunneled Chrome plus normal direct Chrome
 
@@ -174,7 +174,7 @@ Repeated same-mode `connect` is idempotent. Switching between SOCKS and System P
 
 ## What this product is not
 
-`0.3.0-rc3` is not represented as a packet-level full-device VPN.
+`0.4.0-rc1` is not represented as a packet-level full-device VPN.
 
 System Proxy can cover a large class of macOS applications, selective Chrome gives an explicit split-browser workflow, and `devfix-tunnel run` covers explicit CLI child processes, but software that bypasses System Proxy and does not honor SOCKS/proxy configuration is not automatically captured.
 

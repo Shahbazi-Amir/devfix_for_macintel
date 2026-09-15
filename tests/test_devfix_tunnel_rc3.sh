@@ -67,7 +67,7 @@ export DEVFIX_TUNNEL_STALL_TIMEOUT=1
 export DEVFIX_TUNNEL_BOOTSTRAP_TIMEOUT=5
 export DEVFIX_TUNNEL_SOCKS_PORT=29350
 
-"$TUNNEL" version | grep -q '0.3.0-rc3' || fail 'RC3 version missing'
+"$TUNNEL" version | grep -q '0.4.0-rc1' || fail 'RC3 version missing'
 
 "$TUNNEL" connect socks --transport obfs4 --foreign-only > "$TMP/first.out" 2>&1 || {
   cat "$TMP/first.out" >&2

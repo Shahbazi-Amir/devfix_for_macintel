@@ -2,7 +2,7 @@ name: DevFix Tunnel CI
 
 on:
   push:
-    branches: [feature/devfix-tunnel]
+    branches: [feature/devfix-tunnel, feature/devfix-tunnel-smart-routing]
     paths: ["tunnel/**", "tests/test_devfix_tunnel*.sh", "docs/tunnel/**", ".github/workflows/tunnel-ci.yml"]
   pull_request:
     paths: ["tunnel/**", "tests/test_devfix_tunnel*.sh", "docs/tunnel/**", ".github/workflows/tunnel-ci.yml"]
@@ -36,6 +36,8 @@ jobs:
           test -x /sbin/route
           test -x /usr/bin/nohup
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getsocksfirewallproxy"
+          /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getproxybypassdomains"
+          /usr/sbin/networksetup -help 2>&1 | grep -q -- "-setproxybypassdomains"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-setsocksfirewallproxy"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getautoproxyurl"
           /usr/sbin/networksetup -help 2>&1 | grep -q -- "-getproxyautodiscovery"

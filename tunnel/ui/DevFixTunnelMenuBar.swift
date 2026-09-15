@@ -130,7 +130,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         menu.addItem(.separator())
 
-        connectSafariItem = NSMenuItem(title: "Connect Safari…", action: #selector(connectSafari), keyEquivalent: "")
+        connectSafariItem = NSMenuItem(title: "Connect Browsers (Smart)…", action: #selector(connectSafari), keyEquivalent: "")
         connectSafariItem.target = self
         menu.addItem(connectSafariItem)
 
@@ -176,7 +176,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let noteItem = NSMenuItem(title: "Safari Mode uses macOS System Proxy", action: nil, keyEquivalent: "")
+        let noteItem = NSMenuItem(title: "Smart Mode: .ir/local direct • other browser traffic via Tor", action: nil, keyEquivalent: "")
         noteItem.isEnabled = false
         menu.addItem(noteItem)
 
@@ -243,7 +243,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             } else if current.state == "FAILED" || current.guardian.contains("DEGRADED") {
                 pendingAction = nil
                 pendingSince = nil
-                showAlert(title: "DevFix Tunnel", message: "Safari connection failed. The Terminal window contains the detailed error.")
+                showAlert(title: "DevFix Tunnel", message: "Smart browser connection failed. The Terminal window contains the detailed error.")
             }
 
         case .disconnect, .repair:
@@ -264,7 +264,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             if let since = pendingSince, Date().timeIntervalSince(since) > 5 {
                 return "WAITING FOR TERMINAL AUTHORIZATION…"
             }
-            return "STARTING SAFARI MODE…"
+            return "STARTING SMART MODE…"
         case .disconnect:
             return "DISCONNECTING…"
         case .repair:
@@ -277,7 +277,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         stateItem.title = "State: \(pendingLabel() ?? s.state)"
 
         if s.mode == "SYSTEM_PROXY" {
-            modeItem.title = "Mode: Safari Mode (System Proxy)"
+            modeItem.title = "Mode: Smart Browser Mode (System Proxy)"
         } else if s.mode == "SOCKS" {
             modeItem.title = "Mode: SOCKS (not Safari Mode)"
         } else {
@@ -364,7 +364,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard currentStatus.state == "DISCONNECTED" && currentStatus.mode == "NONE" else {
-            showAlert(title: "DevFix Tunnel", message: "Disconnect the current tunnel mode before starting Safari Mode.")
+            showAlert(title: "DevFix Tunnel", message: "Disconnect the current tunnel mode before starting Smart Browser Mode.")
             return
         }
         openTerminalCommand("/usr/local/bin/devfix-tunnel connect system", action: .connectSafari)
@@ -430,7 +430,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openTorCheck() {
         guard currentStatus.isHealthySystemProxy else {
-            showAlert(title: "DevFix Tunnel", message: "Connect Safari Mode first.")
+            showAlert(title: "DevFix Tunnel", message: "Connect Smart Browser Mode first.")
             return
         }
         openSafari(url: torCheckURL)
@@ -443,7 +443,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if currentStatus.mode == "SYSTEM_PROXY" {
-            showAlert(title: "DevFix Tunnel", message: "Disconnect Safari Mode before using the legacy Selective Chrome mode.")
+            showAlert(title: "DevFix Tunnel", message: "Disconnect Smart Browser Mode before using the legacy Selective Chrome mode.")
             return
         }
         CommandRunner.run(chromeLauncherPath, [torCheckURL]) { [weak self] code, output in
