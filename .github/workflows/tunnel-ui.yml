@@ -58,7 +58,7 @@ jobs:
         with:
           name: DevFixTunnel-0.4.0-rc1-smart-routing-macos-x86_64
           path: |
-            build/tunnel-ui/DevFixTunnel-0.3.0-rc3-safari-preview-macos-x86_64.zip
+            build/tunnel-ui/DevFixTunnel-0.4.0-rc1-smart-routing-macos-x86_64.zip
             build/tunnel-ui/UI_SHA256.txt
           if-no-files-found: error
           retention-days: 14

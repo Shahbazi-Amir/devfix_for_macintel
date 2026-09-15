@@ -32,7 +32,7 @@ jobs:
           test "$(awk -F '\t' '$1=="meek" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 1
           test "$(awk -F '\t' '$1=="obfs4" {n++} END{print n+0}' /tmp/devfix-tunnel-transports.tsv)" -ge 7
 
-      - name: Verify RC3 torrc with packaged Tor parser
+      - name: Verify packaged Tor configuration
         run: |
           /bin/bash tests/test_devfix_tunnel_tor_config.sh \
             build/tunnel/vendor/tor \
